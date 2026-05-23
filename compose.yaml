@@ -1,0 +1,10 @@
+services:
+  proxy:
+    image: nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./secret/cert.pem:/secret/cert.pem:ro
+      - ./secret/key.pem:/secret/key.pem:ro
+      - ./secret/client_ca.crt:/secret/client_ca.crt:ro
+    restart: unless-stopped
+    network_mode: host
