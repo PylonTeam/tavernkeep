@@ -434,12 +434,13 @@ type GetProfileQuery struct {
 
 func getProfileHandler(c *gin.Context) {
 	var query GetProfileQuery
-	var id uint64
 
 	if err := c.ShouldBindQuery(&query); err != nil {
 		c.Status(http.StatusBadRequest)
 		return
 	}
+
+	id := query.ID
 
 	profile := Profile{
 		ID: id,
@@ -693,12 +694,13 @@ type GetMatchQuery struct {
 
 func getMatchHandler(c *gin.Context) {
 	var query GetMatchQuery
-	var id uint64
 
 	if err := c.ShouldBindQuery(&query); err != nil {
 		c.Status(http.StatusBadRequest)
 		return
 	}
+
+	id := query.ID
 
 	var matches = []OfficialMatch{}
 	// FIXME: nil context? BAD!!!
