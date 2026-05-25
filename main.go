@@ -123,7 +123,7 @@ type AuthenticateUserTicket struct {
 			VACBanned       bool   `json:"vacbanned"`
 			PublisherBanned bool   `json:"publisherbanned"`
 		} `json:"params"`
-		Error struct {
+		Error *struct {
 			ErrorCode int    `json:"errorcode"`
 			ErrorDesc string `json:"errordesc"`
 		} `json:"error"`
@@ -384,6 +384,12 @@ func steamAuthTicketHandler(c *gin.Context) {
 
 			authUserTicketRes := AuthenticateUserTicket{}
 			json.NewDecoder(res.Body).Decode(&authUserTicketRes)
+
+			if authUserTicketRes.Response.Error != nil {
+				log.Println("Steam auth failed with error, code", authUserTicketRes.Response.Error.ErrorCode, "(", authUserTicketRes.Response.Error.ErrorDesc, ")")
+				c.AbortWithStatus(http.StatusUnauthorized)
+				return
+			}
 
 			if result := authUserTicketRes.Response.Params.Result; result != "OK" {
 				log.Println("Steam auth failed with non-OK result", result)
