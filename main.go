@@ -222,7 +222,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if queryMatchStmt, err = db.Prepare("SELECT start, end, game_mode, recorded, official_identity FROM match WHERE id = ?"); err != nil {
+	if queryMatchStmt, err = db.Prepare("SELECT start, end, game_mode, recorded, official_identity_subject FROM match WHERE id = ?"); err != nil {
 		return err
 	}
 
@@ -242,7 +242,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if execInsertMatchStmt, err = db.Prepare("INSERT INTO match (start, end, game_mode, official_identity) VALUES (?, ?, ?, ?) RETURNING id, recorded"); err != nil {
+	if execInsertMatchStmt, err = db.Prepare("INSERT INTO match (start, end, game_mode, official_identity_subject, official_identity_fingerprint) VALUES (?, ?, ?, ?, ?) RETURNING id, recorded"); err != nil {
 		return err
 	}
 
@@ -321,13 +321,32 @@ func jwtCachedAuthHandler(c *gin.Context) {
 }
 
 func officialAuthHandler(c *gin.Context) {
-	if c.GetHeader("Official-Verified") == "SUCCESS" {
-		if officialIdentity, hasOfficialIdentity := c.Request.Header["Official-Identity"]; hasOfficialIdentity {
-			c.Set("official_identity", officialIdentity[0])
-		}
+	defer c.Next()
+
+	officialVerified, hasOfficialVerified := c.Request.Header["Official-Verified"]
+	if !hasOfficialVerified || officialVerified[0] == "NONE" {
+		return
 	}
 
-	c.Next()
+	officialIdentitySubject, hasOfficialIdentitySubject := c.Request.Header["Official-Identity-Subject"]
+	if !hasOfficialIdentitySubject {
+		log.Println("Missing official identity subject from proxy request!")
+		return
+	}
+
+	officialIdentityFingerprint, hasOfficialIdentityFingerprint := c.Request.Header["Official-Identity-Fingerprint"]
+	if !hasOfficialIdentityFingerprint {
+		log.Println("Missing official identity fingerprint from proxy request!")
+		return
+	}
+
+	if officialVerified[0] != "SUCCESS" {
+		log.Println("Official authentication failure for", c.ClientIP(), "result", officialVerified[0])
+		return
+	}
+
+	c.Set("official_identity_subject", officialIdentitySubject[0])
+	c.Set("official_identity_fingerprint", officialIdentityFingerprint[0])
 }
 
 func steamAuthTicketHandler(c *gin.Context) {
@@ -846,8 +865,14 @@ func getMatchHandler(c *gin.Context) {
 }
 
 func recordMatchHandler(c *gin.Context) {
-	officialIdentity, isOfficial := c.Get("official_identity")
-	if !isOfficial {
+	officialIdentitySubject, hasSubject := c.Get("official_identity_subject")
+	if !hasSubject {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+
+	officialIdentityFingerprint, hasFingerprint := c.Get("official_identity_fingerprint")
+	if !hasFingerprint {
 		c.Status(http.StatusUnauthorized)
 		return
 	}
@@ -857,7 +882,7 @@ func recordMatchHandler(c *gin.Context) {
 		return
 	}
 
-	mRes := OfficialMatch{Match: m, OfficialIdentity: officialIdentity.(string)}
+	mRes := OfficialMatch{Match: m, OfficialIdentity: officialIdentitySubject.(string)}
 
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
@@ -885,7 +910,7 @@ func recordMatchHandler(c *gin.Context) {
 	defer txExecInsertMatchAdventureTeamBoss.Close()
 
 	var recorded int64
-	if err := txExecInsertMatchStmt.QueryRow(m.Start.Unix(), m.End.Unix(), m.GameMode, officialIdentity.(string)).Scan(&mRes.ID, &recorded); err != nil {
+	if err := txExecInsertMatchStmt.QueryRow(m.Start.Unix(), m.End.Unix(), m.GameMode, officialIdentitySubject.(string), officialIdentityFingerprint.(string)).Scan(&mRes.ID, &recorded); err != nil {
 		c.Error(err)
 		c.Status(http.StatusInternalServerError)
 		return
@@ -1024,7 +1049,8 @@ CREATE TABLE IF NOT EXISTS match (
 	end INTEGER NOT NULL,
 	game_mode TEXT NOT NULL,
 	recorded INTEGER NOT NULL DEFAULT (unixepoch()),
-	official_identity TEXT NOT NULL
+	official_identity_subject TEXT NOT NULL,
+	official_identity_fingerprint TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS match_player (
