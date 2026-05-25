@@ -33,7 +33,9 @@ type DefinitionReference struct {
 type Product struct {
 	DefinitionReference
 
-	Price uint32 `json:"price" binding:"required"`
+	Price       uint32  `json:"price" binding:"required"`
+	Accolade    *string `json:"accolade,omitempty"`
+	Achievement *string `json:"achievement,omitempty"`
 }
 
 type Profile struct {
@@ -152,6 +154,7 @@ var (
 	queryInventoryStmt          *sql.Stmt
 	queryInventoryItemCountStmt *sql.Stmt
 	queryAccoladesStmt          *sql.Stmt
+	queryAccoladeStmt           *sql.Stmt
 
 	execEquipStmt      *sql.Stmt
 	execReduceGemsStmt *sql.Stmt
@@ -196,11 +199,11 @@ func prepareStatements() error {
 		return err
 	}
 
-	if queryProductsStmt, err = db.Prepare("SELECT prototype, name, price FROM product WHERE available = TRUE"); err != nil {
+	if queryProductsStmt, err = db.Prepare("SELECT prototype, name, price, accolade, achievement FROM product WHERE available = TRUE"); err != nil {
 		return err
 	}
 
-	if queryProductStmt, err = db.Prepare("SELECT price FROM product WHERE available = TRUE AND prototype = ? AND name = ?"); err != nil {
+	if queryProductStmt, err = db.Prepare("SELECT price, accolade, achievement FROM product WHERE available = TRUE AND prototype = ? AND name = ?"); err != nil {
 		return err
 	}
 
@@ -220,6 +223,10 @@ func prepareStatements() error {
 		return err
 	}
 
+	if queryAccoladeStmt, err = db.Prepare("SELECT owner FROM accolade WHERE name = ?"); err != nil {
+		return err
+	}
+
 	// Subquery: Set equipped with matching name to 1, and all non-matching 0 (un-equip everything else)
 	if execEquipStmt, err = db.Prepare(`UPDATE item
 SET equipped = CASE
@@ -235,7 +242,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if execInsertItemStmt, err = db.Prepare("INSERT INTO item (prototype, name, owner, purchase_price) VALUES (?, ?, ?, ?) RETURNING issued"); err != nil {
+	if execInsertItemStmt, err = db.Prepare("INSERT INTO item (prototype, name, owner, purchase_price, accolade) VALUES (?, ?, ?, ?, ?) RETURNING issued"); err != nil {
 		return err
 	}
 
@@ -333,6 +340,7 @@ func closeStatements() {
 	execInsertItemStmt.Close()
 	execReduceGemsStmt.Close()
 	execEquipStmt.Close()
+	queryAccoladeStmt.Close()
 	queryAccoladesStmt.Close()
 	queryInventoryItemCountStmt.Close()
 	queryInventoryStmt.Close()
@@ -555,7 +563,7 @@ func listProductsHandler(c *gin.Context) {
 	products := []Product{}
 	var product Product
 	for rows.Next() {
-		if err := rows.Scan(&product.Prototype, &product.Name, &product.Price); err != nil {
+		if err := rows.Scan(&product.Prototype, &product.Name, &product.Price, &product.Accolade, &product.Achievement); err != nil {
 			c.Error(err)
 			c.Status(http.StatusInternalServerError)
 			return
@@ -622,7 +630,8 @@ func purchaseHandler(c *gin.Context) {
 		return
 	}
 
-	err = txQueryProductStmt.QueryRow(item.Prototype, item.Name).Scan(&item.PurchasePrice)
+	var accolade, achievement *string
+	err = txQueryProductStmt.QueryRow(item.Prototype, item.Name).Scan(&item.PurchasePrice, &accolade, &achievement)
 
 	if err == sql.ErrNoRows {
 		c.Status(http.StatusNotFound)
@@ -633,26 +642,48 @@ func purchaseHandler(c *gin.Context) {
 		return
 	}
 
-	result, err := txExecReduceGemsStmt.Exec(item.PurchasePrice, item.PurchasePrice, id)
-	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
-		return
+	if accolade != nil {
+		txQueryAccoladeStmt := tx.Stmt(queryAccoladeStmt)
+		defer txQueryAccoladeStmt.Close()
+
+		var owner string
+		if err = txQueryAccoladeStmt.QueryRow(*accolade).Scan(&owner); err == sql.ErrNoRows || id != owner {
+			c.Status(http.StatusForbidden)
+			return
+		} else if err != nil {
+			c.Error(err)
+			c.Status(http.StatusInternalServerError)
+			return
+		}
 	}
 
-	affected, err := result.RowsAffected()
-	if err != nil {
-		// FIXME: no panics!
-		panic("can't get affected rows?")
+	if achievement != nil {
+		log.Println("requires", achievement)
 	}
 
-	if affected == 0 {
-		c.Status(http.StatusForbidden)
-		return
+	if *item.PurchasePrice > 0 {
+		result, err := txExecReduceGemsStmt.Exec(item.PurchasePrice, item.PurchasePrice, id)
+		if err != nil {
+			c.Error(err)
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+
+		affected, err := result.RowsAffected()
+		if err != nil {
+			c.Error(err)
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+
+		if affected == 0 {
+			c.Status(http.StatusForbidden)
+			return
+		}
 	}
 
 	var issued int64
-	if err := txExecInsertItemStmt.QueryRow(item.Prototype, item.Name, id, item.PurchasePrice).Scan(&issued); err != nil {
+	if err := txExecInsertItemStmt.QueryRow(item.Prototype, item.Name, id, item.PurchasePrice, accolade).Scan(&issued); err != nil {
 		c.Error(err)
 		c.Status(http.StatusInternalServerError)
 		return
