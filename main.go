@@ -50,6 +50,18 @@ type Item struct {
 	PurchasePrice *uint32   `json:"purchasePrice,omitempty"`
 }
 
+type AchievementDef struct {
+	Target uint32 `json:"target" binding:"required"`
+	Reward uint32 `json:"reward" binding:"required"`
+}
+
+type Achievement struct {
+	AchievementDef
+
+	Progress  uint32     `json:"progress" binding:"required"`
+	ClaimedAt *time.Time `json:"claimedAt,omitempty"`
+}
+
 // FIXME: why when unmarshalling Match does this one not respect required bindings?
 type Player struct {
 	Name string `json:"name" binding:"required"`
@@ -160,7 +172,13 @@ var (
 	execIncreaseGemsStmt *sql.Stmt
 
 	queryAchievementDefsStmt *sql.Stmt
-	queryAchievementsStmt    *sql.Stmt
+	queryAchievementDefStmt  *sql.Stmt
+
+	queryAchievementsStmt *sql.Stmt
+	queryAchievementStmt  *sql.Stmt
+
+	execAchievementProgress *sql.Stmt
+	execAchievementClaim    *sql.Stmt
 )
 
 func readSteamApiKey() (string, error) {
@@ -265,10 +283,40 @@ WHERE prototype = ?
 		return err
 	}
 
+	if queryAchievementDefsStmt, err = db.Prepare("SELECT name, target, reward FROM achievement_def WHERE game_mode = ?"); err != nil {
+		return err
+	}
+
+	if queryAchievementDefStmt, err = db.Prepare("SELECT target, reward, no_ext_mut FROM achievement_def WHERE name = ? AND game_mode = ?"); err != nil {
+		return err
+	}
+
+	if queryAchievementsStmt, err = db.Prepare("SELECT name, progress, claimed, claimed_at FROM achievement WHERE game_mode = ? AND id = ?"); err != nil {
+		return err
+	}
+
+	if queryAchievementStmt, err = db.Prepare("SELECT progress, claimed, claimed_at FROM achievement WHERE name = ? AND game_mode = ? AND id = ?"); err != nil {
+		return err
+	}
+
+	if execAchievementProgress, err = db.Prepare("INSERT INTO achievement (name, game_mode, id, progress) VALUES (?, ?, ?, ?) ON CONFLICT(name, game_mode, id) DO UPDATE SET progress=? WHERE claimed IS NULL AND claimed_at IS NULL"); err != nil {
+		return err
+	}
+
+	if execAchievementClaim, err = db.Prepare("UPDATE achievement SET claimed=?, claimed_at=unixepoch() WHERE name=? AND game_mode=? AND id=? AND progress=? AND claimed_at IS NULL AND claimed_at IS NULL RETURNING claimed_at, progress"); err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func closeStatements() {
+	execAchievementClaim.Close()
+	execAchievementProgress.Close()
+	queryAchievementStmt.Close()
+	queryAchievementsStmt.Close()
+	queryAchievementDefStmt.Close()
+	queryAchievementDefsStmt.Close()
 	execIncreaseGemsStmt.Close()
 	execInsertMatchMetricStmt.Close()
 	execInsertMatchAdventureTeamBoss.Close()
@@ -969,14 +1017,11 @@ func recordMatchHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, mRes)
 }
 
-type GetAchievementsQuery struct {
-	GameMode string `form:"gameMode" binding:"required"`
-}
-
 func getAccoladesHandler(c *gin.Context) {
 	rows, err := queryAccoladesStmt.Query()
 	if err != nil {
 		c.Error(err)
+		c.Status(http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -1001,6 +1046,273 @@ func getAccoladesHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, accolades)
+}
+
+type GetAchievementsQuery struct {
+	GameMode string `form:"gameMode" binding:"required"`
+}
+
+func getAchievementsHandler(c *gin.Context) {
+	id, hasID := c.Get("id")
+	if !hasID {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+
+	var query GetAchievementsQuery
+	if err := c.ShouldBindQuery(&query); err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+
+	// FIXME: nil context? BAD!!!
+	tx, err := db.BeginTx(context.TODO(), nil)
+	if err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	txQueryAchievementDefsStmt := tx.Stmt(queryAchievementDefsStmt)
+	defer txQueryAchievementDefsStmt.Close()
+	txQueryAchievementsStmt := tx.Stmt(queryAchievementsStmt)
+	defer txQueryAchievementsStmt.Close()
+
+	rows, err := txQueryAchievementDefsStmt.Query(query.GameMode)
+	if err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	achievements := map[string]Achievement{}
+	for rows.Next() {
+		var name string
+		a := Achievement{}
+
+		if err := rows.Scan(&name, &a.Target, &a.Reward); err != nil {
+			c.Error(err)
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+
+		achievements[name] = a
+	}
+
+	rows, err = txQueryAchievementsStmt.Query(query.GameMode, id)
+	if err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name string
+		var progress uint32
+		var claimed *uint32
+		var claimed_at *int64
+
+		if err := rows.Scan(&name, &progress, &claimed, &claimed_at); err != nil {
+			c.Error(err)
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+
+		if a, ok := achievements[name]; ok {
+			a.Progress = progress
+
+			if claimed != nil {
+				a.Reward = *claimed
+			}
+
+			if claimed_at != nil {
+				a.ClaimedAt = new(time.Time)
+				*a.ClaimedAt = time.Unix(*claimed_at, 0)
+			}
+
+			achievements[name] = a
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, achievements)
+}
+
+type PostAchievementProgressBody struct {
+	ID          uint64 `json:"id,string" binding:"required"`
+	Achievement struct {
+		Name     string `json:"name" binding:"required"`
+		GameMode string `json:"gameMode" binding:"required"`
+	} `json:"achievement" binding:"required"`
+	Delta *uint32 `json:"delta,omitempty"`
+}
+
+func progressAchievementHandler(c *gin.Context) {
+	var b PostAchievementProgressBody
+	if c.BindJSON(&b) != nil {
+		return
+	}
+
+	if b.Delta != nil && *b.Delta == 0 {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+
+	// FIXME: nil context? BAD!!!
+	tx, err := db.BeginTx(context.TODO(), nil)
+	if err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	txQueryAchievementDefStmt := tx.Stmt(queryAchievementDefStmt)
+	defer txQueryAchievementDefStmt.Close()
+	txQueryAchievementStmt := tx.Stmt(queryAchievementStmt)
+	defer txQueryAchievementStmt.Close()
+	txExecAchievementProgress := tx.Stmt(execAchievementProgress)
+	defer txExecAchievementProgress.Close()
+
+	a := Achievement{}
+	var noExtMut bool
+
+	if err := txQueryAchievementDefStmt.QueryRow(b.Achievement.Name, b.Achievement.GameMode).Scan(&a.Target, &a.Reward, &noExtMut); err == sql.ErrNoRows {
+		c.Status(http.StatusNotFound)
+		return
+	} else if err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	if noExtMut {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+
+	var claimed *uint32
+	var claimed_at *int64
+	if err := txQueryAchievementStmt.QueryRow(b.Achievement.Name, b.Achievement.GameMode, b.ID).Scan(&a.Progress, &claimed, &claimed_at); err != nil && err != sql.ErrNoRows {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	if claimed != nil || claimed_at != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+
+	initialProgress := a.Progress
+	if b.Delta != nil {
+		a.Progress = min(a.Target, a.Progress+*b.Delta)
+	} else {
+		a.Progress = a.Target
+	}
+
+	if a.Progress != initialProgress {
+		if _, err = txExecAchievementProgress.Exec(b.Achievement.Name, b.Achievement.GameMode, b.ID, a.Progress, a.Progress); err != nil {
+			c.Error(err)
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, a)
+}
+
+type PostAchievementClaimBody struct {
+	Name     string `json:"name" binding:"required"`
+	GameMode string `json:"gameMode" binding:"required"`
+}
+
+func claimAchievementHandler(c *gin.Context) {
+	id, hasID := c.Get("id")
+	if !hasID {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+
+	var b PostAchievementClaimBody
+	if c.BindJSON(&b) != nil {
+		return
+	}
+
+	// FIXME: nil context? BAD!!!
+	tx, err := db.BeginTx(context.TODO(), nil)
+	if err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	txQueryAchievementDefStmt := tx.Stmt(queryAchievementDefStmt)
+	defer txQueryAchievementDefStmt.Close()
+	txExecAchievementClaim := tx.Stmt(execAchievementClaim)
+	defer txExecAchievementClaim.Close()
+	txExecIncreaseGemsStmt := tx.Stmt(execIncreaseGemsStmt)
+	defer txExecIncreaseGemsStmt.Close()
+
+	a := Achievement{}
+	var noExtMut bool
+
+	if err := txQueryAchievementDefStmt.QueryRow(b.Name, b.GameMode).Scan(&a.Target, &a.Reward, &noExtMut); err == sql.ErrNoRows {
+		c.Status(http.StatusNotFound)
+		return
+	} else if err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	if noExtMut {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+
+	var claimed_at int64
+	if err = txExecAchievementClaim.QueryRow(a.Reward, b.Name, b.GameMode, id, a.Target).Scan(&claimed_at, &a.Progress); err == sql.ErrNoRows {
+		c.Status(http.StatusBadRequest)
+		return
+	} else if err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	a.ClaimedAt = new(time.Time)
+	*a.ClaimedAt = time.Unix(claimed_at, 0)
+
+	if a.Reward > 0 {
+		if _, err = txExecIncreaseGemsStmt.Exec(id, a.Reward); err != nil {
+			c.Error(err)
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		c.Error(err)
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, a)
 }
 
 const dbSchema = `
@@ -1094,9 +1406,11 @@ CREATE TABLE IF NOT EXISTS achievement_def (
 	game_mode TEXT NOT NULL,
 	target INTEGER NOT NULL,
 	reward INTEGER NOT NULL,
+	no_ext_mut INTEGER NOT NULL DEFAULT FALSE,
 	CONSTRAINT pk PRIMARY KEY (name, game_mode),
 	CONSTRAINT target_check CHECK (target > 0),
-	CONSTRAINT reward_check CHECK (reward >= 0)
+	CONSTRAINT reward_check CHECK (reward >= 0),
+	CONSTRAINT no_ext_mut_check CHECK (no_ext_mut IN (FALSE, TRUE))
 );
 
 CREATE TABLE IF NOT EXISTS achievement (
@@ -1104,15 +1418,19 @@ CREATE TABLE IF NOT EXISTS achievement (
 	game_mode TEXT NOT NULL,
 	id TEXT NOT NULL,
 	progress INTEGER NOT NULL,
-	claimed INTEGER NOT NULL DEFAULT FALSE,
+	claimed INTEGER,
+	claimed_at INTEGER,
 	CONSTRAINT pk PRIMARY KEY (name, game_mode, id),
-	CONSTRAINT claimed_check CHECK (claimed IN (FALSE, TRUE))
+	CONSTRAINT progress_check CHECK (progress > 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_item_owner ON item(owner);
 CREATE INDEX IF NOT EXISTS idx_product_available ON product(available);
 
 CREATE INDEX IF NOT EXISTS idx_accolade_owner ON accolade(owner);
+
+CREATE INDEX IF NOT EXISTS idx_achievement_def_game_mode ON achievement_def(game_mode);
+CREATE INDEX IF NOT EXISTS idx_achievement_game_mode_id ON achievement(game_mode, id);
 `
 
 func errorHandler(c *gin.Context) {
@@ -1178,6 +1496,10 @@ func main() {
 	r.POST("/match/v1", officialAuthHandler, recordMatchHandler)
 
 	r.GET("/accolades/v1", getAccoladesHandler)
+
+	r.GET("/achievements/v1", steamAuthTicketHandler, getAchievementsHandler)
+	r.POST("/achievements/v1", officialAuthHandler, progressAchievementHandler)
+	r.POST("/achievements/claim/v1", steamAuthTicketHandler, claimAchievementHandler)
 
 	if err := r.Run(":8080"); err != nil {
 		log.Fatalln(fmt.Errorf("unable to bind Gin engine to port 8080: %w", err))
