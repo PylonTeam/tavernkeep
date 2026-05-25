@@ -33,13 +33,12 @@ type DefinitionReference struct {
 type Product struct {
 	DefinitionReference
 
-	Price     uint64 `json:"price" binding:"required"`
-	available bool
+	Price uint32 `json:"price" binding:"required"`
 }
 
 type Profile struct {
 	ID        uint64            `json:"id,string" binding:"required"`
-	Gems      uint64            `json:"gems" binding:"required"`
+	Gems      int64             `json:"gems" binding:"required"`
 	Equipment map[string]string `json:"equipment" binding:"required"`
 }
 
@@ -48,18 +47,18 @@ type Item struct {
 	DefinitionReference
 
 	Issued        time.Time `json:"issued" binding:"required"`
-	PurchasePrice *uint64   `json:"purchasePrice,omitempty"`
+	PurchasePrice *uint32   `json:"purchasePrice,omitempty"`
 }
 
 // FIXME: why when unmarshalling Match does this one not respect required bindings?
 type Player struct {
 	Name string `json:"name" binding:"required"`
-	Team uint   `json:"team" binding:"required"`
+	Team uint32 `json:"team" binding:"required"`
 
-	Reward uint64 `json:"reward" binding:"required"`
+	Reward uint32 `json:"reward" binding:"required"`
 
-	Kills  int `json:"kills" binding:"required"`
-	Deaths int `json:"deaths" binding:"required"`
+	Kills  int32 `json:"kills" binding:"required"`
+	Deaths int32 `json:"deaths" binding:"required"`
 }
 
 type Team struct {
