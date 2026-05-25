@@ -436,14 +436,7 @@ func getProfileHandler(c *gin.Context) {
 	var query GetProfileQuery
 	var id uint64
 
-	// first, check for the query parameter.
-	// if it isn't there, try to use the ID from Steam authentication.
-	// otherwise, fail.
-	if err := c.ShouldBindQuery(&query); err == nil {
-		id = query.ID
-	} else if authID, hasID := c.Get("id"); hasID {
-		id = authID.(uint64)
-	} else {
+	if err := c.ShouldBindQuery(&query); err != nil {
 		c.Status(http.StatusBadRequest)
 		return
 	}
@@ -702,14 +695,7 @@ func getMatchHandler(c *gin.Context) {
 	var query GetMatchQuery
 	var id uint64
 
-	// first, check for the query parameter.
-	// if it isn't there, try to use the ID from Steam authentication.
-	// otherwise, fail.
-	if err := c.ShouldBindQuery(&query); err == nil {
-		id = query.ID
-	} else if authID, hasID := c.Get("id"); hasID {
-		id = authID.(uint64)
-	} else {
+	if err := c.ShouldBindQuery(&query); err != nil {
 		c.Status(http.StatusBadRequest)
 		return
 	}
@@ -1183,11 +1169,11 @@ func main() {
 	r.GET("/shop/v1", listProductsHandler)
 	r.POST("/shop/purchase/v1", steamAuthTicketHandler, purchaseHandler)
 
-	r.GET("/profile/v1", steamAuthTicketHandler, getProfileHandler)
+	r.GET("/profile/v1", getProfileHandler)
 	r.GET("/profile/inventory/v1", steamAuthTicketHandler, getInventoryHandler)
 	r.POST("/profile/equip/v1", steamAuthTicketHandler, equipItemHandler)
 
-	r.GET("/match/v1", steamAuthTicketHandler, getMatchHandler)
+	r.GET("/match/v1", getMatchHandler)
 	r.POST("/match/v1", officialAuthHandler, recordMatchHandler)
 
 	r.GET("/accolades/v1", getAccoladesHandler)
