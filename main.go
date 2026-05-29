@@ -1312,11 +1312,6 @@ func claimAchievementHandler(c *gin.Context) {
 		return
 	}
 
-	if noExtMut {
-		c.Status(http.StatusBadRequest)
-		return
-	}
-
 	var claimed_at int64
 	if err = txExecAchievementClaim.QueryRow(a.Reward, b.Name, b.GameMode, id, a.Target).Scan(&claimed_at, &a.Progress); err == sql.ErrNoRows {
 		c.Status(http.StatusBadRequest)
