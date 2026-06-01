@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -93,9 +92,20 @@ type Match struct {
 	Teams []*Team `json:"teams" binding:"required"`
 }
 
+var ErrNoSteamAuth = errors.New("no steam auth")
+var ErrNoOfficialAuth = errors.New("no official auth")
+var ErrDatabase = errors.New("database issue")
+var ErrMalformedBody = errors.New("malformed body")
+var ErrMalformedQuery = errors.New("malformed query")
 var ErrMalformedMatch = errors.New("malformed match")
-
-var permittedMatchGameModes = []string{"pvpa"}
+var ErrAchievementDoesNotExist = errors.New("achievement does not exist")
+var ErrAchievementNoDeltaZero = errors.New("delta must not be zero")
+var ErrAchievementNoExtMut = errors.New("cannot externally mutate this achievement")
+var ErrAchievementAlreadyClaimed = errors.New("achievement already claimed")
+var ErrProductDoesNotExist = errors.New("product does not exist")
+var ErrProductAlreadyOwned = errors.New("product already owned")
+var ErrProductCannotAfford = errors.New("cannot afford product")
+var ErrProductRequiresAccolade = errors.New("prerequisite accolade not in possession")
 
 func (m *Match) UnmarshalJSON(b []byte) error {
 	type aux Match
@@ -104,16 +114,19 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 	}
 
 	if len(m.Players) == 0 {
-		return ErrMalformedMatch
+		return fmt.Errorf("%w: no players", ErrMalformedMatch)
 	}
 
-	// NOTE: this is PvP Adventure specific
-	if len(m.Teams) == 0 || m.Teams[0] != nil {
-		return ErrMalformedMatch
-	}
+	if m.GameMode == "pvpa" {
+		if len(m.Teams) == 0 {
+			return fmt.Errorf("%w: no teams", ErrMalformedMatch)
+		}
 
-	if !slices.Contains(permittedMatchGameModes, m.GameMode) {
-		return ErrMalformedMatch
+		if m.Teams[0] != nil {
+			return fmt.Errorf("%w: team None must be null", ErrMalformedMatch)
+		}
+	} else {
+		return fmt.Errorf("%w: unknown gamemode", ErrMalformedMatch)
 	}
 
 	return nil
@@ -375,33 +388,42 @@ func jwtCachedAuthHandler(c *gin.Context) {
 	c.Next()
 }
 
+type OfficialIdentity struct {
+	Subject     string
+	Fingerprint string
+}
+
 func officialAuthHandler(c *gin.Context) {
-	defer c.Next()
-
-	officialVerified, hasOfficialVerified := c.Request.Header["Official-Verified"]
-	if !hasOfficialVerified || officialVerified[0] == "NONE" {
+	verified, hasVerified := c.Request.Header["Official-Verified"]
+	if !hasVerified {
+		abortStatusError(c, http.StatusUnauthorized, ErrNoOfficialAuth)
 		return
 	}
 
-	officialIdentitySubject, hasOfficialIdentitySubject := c.Request.Header["Official-Identity-Subject"]
-	if !hasOfficialIdentitySubject {
-		log.Println("Missing official identity subject from proxy request!")
+	if verified[0] != "SUCCESS" {
+		abortStatusError(c, http.StatusUnauthorized, fmt.Errorf("%w: unable to verify: %s", ErrNoOfficialAuth, verified[0]))
 		return
 	}
 
-	officialIdentityFingerprint, hasOfficialIdentityFingerprint := c.Request.Header["Official-Identity-Fingerprint"]
-	if !hasOfficialIdentityFingerprint {
-		log.Println("Missing official identity fingerprint from proxy request!")
+	subject, hasSubject := c.Request.Header["Official-Identity-Subject"]
+	fingerprint, hasFingerprint := c.Request.Header["Official-Identity-Fingerprint"]
+	if !hasSubject || !hasFingerprint {
+		c.Error(fmt.Errorf("%w: missing identity headers from proxy?", ErrNoOfficialAuth))
+		abortStatusError(c, http.StatusUnauthorized, ErrNoOfficialAuth)
 		return
 	}
 
-	if officialVerified[0] != "SUCCESS" {
-		log.Println("Official authentication failure for", c.ClientIP(), "result", officialVerified[0])
-		return
-	}
+	c.Set("official", OfficialIdentity{Subject: subject[0], Fingerprint: fingerprint[0]})
 
-	c.Set("official_identity_subject", officialIdentitySubject[0])
-	c.Set("official_identity_fingerprint", officialIdentityFingerprint[0])
+	c.Next()
+}
+
+type ErrorBody struct {
+	ErrorText string `json:"errorText" binding:"required"`
+}
+
+func abortStatusError(c *gin.Context, httpCode int, err error) {
+	c.AbortWithStatusJSON(httpCode, ErrorBody{ErrorText: err.Error()})
 }
 
 func steamAuthTicketHandler(c *gin.Context) {
@@ -424,16 +446,15 @@ func steamAuthTicketHandler(c *gin.Context) {
 
 			res, err := http.Get(authUserTicketUrl.String())
 			if err != nil {
-				log.Println("Steam failed to respond for auth", err)
-				c.Error(err)
-				c.AbortWithStatus(http.StatusServiceUnavailable)
+				abortErr := fmt.Errorf("%w: unable to make authentication request to Steam", ErrNoSteamAuth)
+				c.Error(errors.Join(abortErr, err))
+				abortStatusError(c, http.StatusServiceUnavailable, abortErr)
 				return
 			}
 			defer res.Body.Close()
 
 			if res.StatusCode != http.StatusOK {
-				log.Println("Steam auth failed with non-OK response", res.Status)
-				c.AbortWithStatus(http.StatusUnauthorized)
+				abortStatusError(c, http.StatusUnauthorized, fmt.Errorf("%w: unsuccessful authentication response from Steam", ErrNoSteamAuth))
 				return
 			}
 
@@ -441,15 +462,12 @@ func steamAuthTicketHandler(c *gin.Context) {
 			json.NewDecoder(res.Body).Decode(&authUserTicketRes)
 
 			if authUserTicketRes.Response.Error != nil {
-				log.Println("Steam auth failed with error, code", authUserTicketRes.Response.Error.ErrorCode, "(", authUserTicketRes.Response.Error.ErrorDesc, ")")
-				c.AbortWithStatus(http.StatusUnauthorized)
+				abortStatusError(c, http.StatusUnauthorized, fmt.Errorf("%w: authentication failed: %d (%s)", ErrNoSteamAuth, authUserTicketRes.Response.Error.ErrorCode, authUserTicketRes.Response.Error.ErrorDesc))
 				return
 			}
 
 			if result := authUserTicketRes.Response.Params.Result; result != "OK" {
-				log.Println("Steam auth failed with non-OK result", result)
-				c.String(http.StatusUnauthorized, result)
-				c.Abort()
+				abortStatusError(c, http.StatusUnauthorized, fmt.Errorf("%w: authentication failed: %s", ErrNoSteamAuth, result))
 				return
 			}
 
@@ -491,7 +509,7 @@ func getProfileHandler(c *gin.Context) {
 	var query GetProfileQuery
 
 	if err := c.ShouldBindQuery(&query); err != nil {
-		c.Status(http.StatusBadRequest)
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedQuery, err))
 		return
 	}
 
@@ -504,8 +522,8 @@ func getProfileHandler(c *gin.Context) {
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer tx.Rollback()
@@ -517,15 +535,15 @@ func getProfileHandler(c *gin.Context) {
 	defer txQueryEquipmentStmt.Close()
 
 	if err := txQueryGemsStmt.QueryRow(id).Scan(&profile.Gems); err != nil && err != sql.ErrNoRows {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
 	rows, err := txQueryEquipmentStmt.Query(id)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer rows.Close()
@@ -534,8 +552,8 @@ func getProfileHandler(c *gin.Context) {
 	for rows.Next() {
 		var prototype, name string
 		if err := rows.Scan(&prototype, &name); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
@@ -543,8 +561,8 @@ func getProfileHandler(c *gin.Context) {
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -554,8 +572,8 @@ func getProfileHandler(c *gin.Context) {
 func listProductsHandler(c *gin.Context) {
 	rows, err := queryProductsStmt.Query()
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer rows.Close()
@@ -564,16 +582,16 @@ func listProductsHandler(c *gin.Context) {
 	var product Product
 	for rows.Next() {
 		if err := rows.Scan(&product.Prototype, &product.Name, &product.Price, &product.Accolade, &product.Achievement); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 		products = append(products, product)
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -587,12 +605,13 @@ type PostPurchaseBody struct {
 func purchaseHandler(c *gin.Context) {
 	id, hasID := c.Get("id")
 	if !hasID {
-		c.Status(http.StatusUnauthorized)
+		abortStatusError(c, http.StatusUnauthorized, ErrNoSteamAuth)
 		return
 	}
 
 	var body PostPurchaseBody
-	if c.BindJSON(&body) != nil {
+	if err := c.ShouldBindJSON(&body); err != nil {
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedBody, err))
 		return
 	}
 
@@ -601,8 +620,8 @@ func purchaseHandler(c *gin.Context) {
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer tx.Rollback()
@@ -620,13 +639,13 @@ func purchaseHandler(c *gin.Context) {
 	var count int
 	err = txQueryInventoryItemCountStmt.QueryRow(item.Prototype, item.Name, id).Scan(&count)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
 	if count > 0 {
-		c.Status(http.StatusConflict)
+		abortStatusError(c, http.StatusConflict, ErrProductAlreadyOwned)
 		return
 	}
 
@@ -634,11 +653,11 @@ func purchaseHandler(c *gin.Context) {
 	err = txQueryProductStmt.QueryRow(item.Prototype, item.Name).Scan(&item.PurchasePrice, &accolade, &achievement)
 
 	if err == sql.ErrNoRows {
-		c.Status(http.StatusNotFound)
+		abortStatusError(c, http.StatusNotFound, ErrProductDoesNotExist)
 		return
 	} else if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -648,52 +667,48 @@ func purchaseHandler(c *gin.Context) {
 
 		var owner string
 		if err = txQueryAccoladeStmt.QueryRow(*accolade).Scan(&owner); err == sql.ErrNoRows || id != owner {
-			c.Status(http.StatusForbidden)
+			abortStatusError(c, http.StatusForbidden, ErrProductRequiresAccolade)
 			return
 		} else if err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
-	}
-
-	if achievement != nil {
-		log.Println("requires", achievement)
 	}
 
 	if *item.PurchasePrice > 0 {
 		result, err := txExecReduceGemsStmt.Exec(item.PurchasePrice, item.PurchasePrice, id)
 		if err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
 		affected, err := result.RowsAffected()
 		if err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
 		if affected == 0 {
-			c.Status(http.StatusForbidden)
+			abortStatusError(c, http.StatusForbidden, ErrProductCannotAfford)
 			return
 		}
 	}
 
 	var issued int64
 	if err := txExecInsertItemStmt.QueryRow(item.Prototype, item.Name, id, item.PurchasePrice, accolade).Scan(&issued); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
 	item.Issued = time.Unix(issued, 0)
 
 	if err := tx.Commit(); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -708,19 +723,20 @@ type PostProfileEquip struct {
 func equipItemHandler(c *gin.Context) {
 	id, hasID := c.Get("id")
 	if !hasID {
-		c.Status(http.StatusUnauthorized)
+		abortStatusError(c, http.StatusUnauthorized, ErrNoSteamAuth)
 		return
 	}
 
 	var postProfileEquip PostProfileEquip
-	if c.BindJSON(&postProfileEquip) != nil {
+	if err := c.ShouldBindJSON(&postProfileEquip); err != nil {
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedBody, err))
 		return
 	}
 
 	_, err := execEquipStmt.Exec(postProfileEquip.Name, postProfileEquip.Prototype, id)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -730,14 +746,14 @@ func equipItemHandler(c *gin.Context) {
 func getInventoryHandler(c *gin.Context) {
 	id, hasID := c.Get("id")
 	if !hasID {
-		c.Status(http.StatusUnauthorized)
+		abortStatusError(c, http.StatusUnauthorized, ErrNoSteamAuth)
 		return
 	}
 
 	rows, err := queryInventoryStmt.Query(id)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer rows.Close()
@@ -748,8 +764,8 @@ func getInventoryHandler(c *gin.Context) {
 		var item Item
 
 		if err := rows.Scan(&item.Prototype, &item.Name, &issued, &item.PurchasePrice); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
@@ -758,8 +774,8 @@ func getInventoryHandler(c *gin.Context) {
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -774,7 +790,7 @@ func getMatchHandler(c *gin.Context) {
 	var query GetMatchQuery
 
 	if err := c.ShouldBindQuery(&query); err != nil {
-		c.Status(http.StatusBadRequest)
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedQuery, err))
 		return
 	}
 
@@ -784,8 +800,8 @@ func getMatchHandler(c *gin.Context) {
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer tx.Rollback()
@@ -797,8 +813,8 @@ func getMatchHandler(c *gin.Context) {
 	// query all match ids that this player has been involved in.
 	rows, err := txQueryMatchesStmt.Query(id)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer rows.Close()
@@ -811,15 +827,15 @@ func getMatchHandler(c *gin.Context) {
 	for rows.Next() {
 		var match OfficialMatch
 		if err := rows.Scan(&match.ID); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
 		var start, end, recorded int64
 		if err := txQueryMatchStmt.QueryRow(match.ID).Scan(&start, &end, &match.GameMode, &recorded, &match.OfficialIdentity); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
@@ -829,8 +845,8 @@ func getMatchHandler(c *gin.Context) {
 
 		rows, err := txQueryMatchPlayerStmt.Query(match.ID)
 		if err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 		defer rows.Close()
@@ -841,8 +857,8 @@ func getMatchHandler(c *gin.Context) {
 			var player Player
 
 			if err := rows.Scan(&id, &player.Name, &player.Team, &player.Reward, &player.Kills, &player.Deaths); err != nil {
-				c.Error(err)
-				c.Status(http.StatusInternalServerError)
+				c.Error(errors.Join(ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 				return
 			}
 
@@ -850,8 +866,8 @@ func getMatchHandler(c *gin.Context) {
 		}
 
 		if err := rows.Err(); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
@@ -863,8 +879,8 @@ func getMatchHandler(c *gin.Context) {
 
 		rows, err = txQueryMatchAdventureTeam.Query(match.ID)
 		if err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 		defer rows.Close()
@@ -873,8 +889,8 @@ func getMatchHandler(c *gin.Context) {
 			var teamNumber, points int
 
 			if err := rows.Scan(&teamNumber, &points); err != nil {
-				c.Error(err)
-				c.Status(http.StatusInternalServerError)
+				c.Error(errors.Join(ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 				return
 			}
 
@@ -891,15 +907,15 @@ func getMatchHandler(c *gin.Context) {
 		}
 
 		if err := rows.Err(); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
 		rows, err = txQueryMatchAdventureTeamBoss.Query(match.ID)
 		if err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
@@ -910,8 +926,8 @@ func getMatchHandler(c *gin.Context) {
 			var firstBlood bool
 
 			if err := rows.Scan(&teamNumber, &id, &firstBlood); err != nil {
-				c.Error(err)
-				c.Status(http.StatusInternalServerError)
+				c.Error(errors.Join(ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 				return
 			}
 
@@ -919,8 +935,8 @@ func getMatchHandler(c *gin.Context) {
 		}
 
 		if err := rows.Err(); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
@@ -928,8 +944,8 @@ func getMatchHandler(c *gin.Context) {
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -937,30 +953,27 @@ func getMatchHandler(c *gin.Context) {
 }
 
 func recordMatchHandler(c *gin.Context) {
-	officialIdentitySubject, hasSubject := c.Get("official_identity_subject")
-	if !hasSubject {
-		c.Status(http.StatusUnauthorized)
+	officialAny, hasOfficial := c.Get("official")
+	if !hasOfficial {
+		abortStatusError(c, http.StatusUnauthorized, ErrNoOfficialAuth)
 		return
 	}
 
-	officialIdentityFingerprint, hasFingerprint := c.Get("official_identity_fingerprint")
-	if !hasFingerprint {
-		c.Status(http.StatusUnauthorized)
-		return
-	}
+	official := officialAny.(OfficialIdentity)
 
 	var m Match
-	if c.BindJSON(&m) != nil {
+	if err := c.ShouldBindJSON(&m); err != nil {
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedBody, err))
 		return
 	}
 
-	mRes := OfficialMatch{Match: m, OfficialIdentity: officialIdentitySubject.(string)}
+	mRes := OfficialMatch{Match: m, OfficialIdentity: official.Subject}
 
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer tx.Rollback()
@@ -982,9 +995,9 @@ func recordMatchHandler(c *gin.Context) {
 	defer txExecInsertMatchAdventureTeamBoss.Close()
 
 	var recorded int64
-	if err := txExecInsertMatchStmt.QueryRow(m.Start.Unix(), m.End.Unix(), m.GameMode, officialIdentitySubject.(string), officialIdentityFingerprint.(string)).Scan(&mRes.ID, &recorded); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+	if err := txExecInsertMatchStmt.QueryRow(m.Start.Unix(), m.End.Unix(), m.GameMode, official.Subject, official.Fingerprint).Scan(&mRes.ID, &recorded); err != nil {
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -992,15 +1005,15 @@ func recordMatchHandler(c *gin.Context) {
 
 	for id, player := range m.Players {
 		if _, err = txExecInsertMatchPlayerStmt.Exec(mRes.ID, id, player.Name, player.Team, player.Reward, player.Kills, player.Deaths); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
 		if player.Reward > 0 {
 			if _, err = txExecIncreaseGemsStmt.Exec(id, player.Reward); err != nil {
-				c.Error(err)
-				c.Status(http.StatusInternalServerError)
+				c.Error(errors.Join(ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 				return
 			}
 
@@ -1009,8 +1022,8 @@ func recordMatchHandler(c *gin.Context) {
 
 	for key, value := range m.Metrics {
 		if _, err = txExecInsertMatchMetricStmt.Exec(mRes.ID, key, value); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 	}
@@ -1024,24 +1037,24 @@ func recordMatchHandler(c *gin.Context) {
 		teamNumber := i + 1
 
 		if _, err = txExecInsertMatchAdventureTeam.Exec(mRes.ID, teamNumber, team.Points); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
 		for _, boss := range team.Bosses {
 			// TODO: implement first blood bosses here!
 			if _, err = txExecInsertMatchAdventureTeamBoss.Exec(mRes.ID, teamNumber, boss, false); err != nil {
-				c.Error(err)
-				c.Status(http.StatusInternalServerError)
+				c.Error(errors.Join(ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 				return
 			}
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -1051,8 +1064,8 @@ func recordMatchHandler(c *gin.Context) {
 func getAccoladesHandler(c *gin.Context) {
 	rows, err := queryAccoladesStmt.Query()
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer rows.Close()
@@ -1062,8 +1075,8 @@ func getAccoladesHandler(c *gin.Context) {
 		var name, owner string
 
 		if err := rows.Scan(&name, &owner); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
@@ -1071,8 +1084,8 @@ func getAccoladesHandler(c *gin.Context) {
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -1086,21 +1099,21 @@ type GetAchievementsQuery struct {
 func getAchievementsHandler(c *gin.Context) {
 	id, hasID := c.Get("id")
 	if !hasID {
-		c.Status(http.StatusUnauthorized)
+		abortStatusError(c, http.StatusUnauthorized, ErrNoSteamAuth)
 		return
 	}
 
 	var query GetAchievementsQuery
 	if err := c.ShouldBindQuery(&query); err != nil {
-		c.Status(http.StatusBadRequest)
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedQuery, err))
 		return
 	}
 
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer tx.Rollback()
@@ -1112,8 +1125,8 @@ func getAchievementsHandler(c *gin.Context) {
 
 	rows, err := txQueryAchievementDefsStmt.Query(query.GameMode)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer rows.Close()
@@ -1124,18 +1137,24 @@ func getAchievementsHandler(c *gin.Context) {
 		a := Achievement{}
 
 		if err := rows.Scan(&name, &a.Target, &a.Reward); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
 		achievements[name] = a
 	}
 
+	if err := rows.Err(); err != nil {
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return
+	}
+
 	rows, err = txQueryAchievementsStmt.Query(query.GameMode, id)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer rows.Close()
@@ -1147,8 +1166,8 @@ func getAchievementsHandler(c *gin.Context) {
 		var claimed_at *int64
 
 		if err := rows.Scan(&name, &progress, &claimed, &claimed_at); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
@@ -1168,9 +1187,15 @@ func getAchievementsHandler(c *gin.Context) {
 		}
 	}
 
+	if err := rows.Err(); err != nil {
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return
+	}
+
 	if err := tx.Commit(); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -1188,20 +1213,21 @@ type PostAchievementProgressBody struct {
 
 func progressAchievementHandler(c *gin.Context) {
 	var b PostAchievementProgressBody
-	if c.BindJSON(&b) != nil {
+	if err := c.ShouldBindJSON(&b); err != nil {
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedBody, err))
 		return
 	}
 
 	if b.Delta != nil && *b.Delta == 0 {
-		c.Status(http.StatusBadRequest)
+		abortStatusError(c, http.StatusBadRequest, ErrAchievementNoDeltaZero)
 		return
 	}
 
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer tx.Rollback()
@@ -1217,29 +1243,29 @@ func progressAchievementHandler(c *gin.Context) {
 	var noExtMut bool
 
 	if err := txQueryAchievementDefStmt.QueryRow(b.Achievement.Name, b.Achievement.GameMode).Scan(&a.Target, &a.Reward, &noExtMut); err == sql.ErrNoRows {
-		c.Status(http.StatusNotFound)
+		abortStatusError(c, http.StatusNotFound, ErrAchievementDoesNotExist)
 		return
 	} else if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
 	if noExtMut {
-		c.Status(http.StatusBadRequest)
+		abortStatusError(c, http.StatusBadRequest, ErrAchievementNoExtMut)
 		return
 	}
 
 	var claimed *uint32
 	var claimed_at *int64
 	if err := txQueryAchievementStmt.QueryRow(b.Achievement.Name, b.Achievement.GameMode, b.ID).Scan(&a.Progress, &claimed, &claimed_at); err != nil && err != sql.ErrNoRows {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
 	if claimed != nil || claimed_at != nil {
-		c.Status(http.StatusBadRequest)
+		abortStatusError(c, http.StatusBadRequest, ErrAchievementAlreadyClaimed)
 		return
 	}
 
@@ -1252,15 +1278,15 @@ func progressAchievementHandler(c *gin.Context) {
 
 	if a.Progress != initialProgress {
 		if _, err = txExecAchievementProgress.Exec(b.Achievement.Name, b.Achievement.GameMode, b.ID, a.Progress, a.Progress); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -1275,20 +1301,21 @@ type PostAchievementClaimBody struct {
 func claimAchievementHandler(c *gin.Context) {
 	id, hasID := c.Get("id")
 	if !hasID {
-		c.Status(http.StatusUnauthorized)
+		abortStatusError(c, http.StatusUnauthorized, ErrNoSteamAuth)
 		return
 	}
 
 	var b PostAchievementClaimBody
-	if c.BindJSON(&b) != nil {
+	if err := c.ShouldBindJSON(&b); err != nil {
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedBody, err))
 		return
 	}
 
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	defer tx.Rollback()
@@ -1304,11 +1331,11 @@ func claimAchievementHandler(c *gin.Context) {
 	var noExtMut bool
 
 	if err := txQueryAchievementDefStmt.QueryRow(b.Name, b.GameMode).Scan(&a.Target, &a.Reward, &noExtMut); err == sql.ErrNoRows {
-		c.Status(http.StatusNotFound)
+		abortStatusError(c, http.StatusNotFound, ErrAchievementDoesNotExist)
 		return
 	} else if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -1317,8 +1344,8 @@ func claimAchievementHandler(c *gin.Context) {
 		c.Status(http.StatusBadRequest)
 		return
 	} else if err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 	a.ClaimedAt = new(time.Time)
@@ -1326,15 +1353,15 @@ func claimAchievementHandler(c *gin.Context) {
 
 	if a.Reward > 0 {
 		if _, err = txExecIncreaseGemsStmt.Exec(id, a.Reward); err != nil {
-			c.Error(err)
-			c.Status(http.StatusInternalServerError)
+			c.Error(errors.Join(ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.Error(err)
-		c.Status(http.StatusInternalServerError)
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
 
@@ -1462,12 +1489,10 @@ CREATE INDEX IF NOT EXISTS idx_achievement_game_mode_id ON achievement(game_mode
 func errorHandler(c *gin.Context) {
 	c.Next()
 
-	if err := c.Errors.Last(); err != nil {
-		log.Println("most recent error:", err)
+	if len(c.Errors) > 0 {
+		log.Println("errors encountered during request handling:", strings.Join(c.Errors.Errors(), ","))
 	}
 }
-
-func errorMiddleware() gin.HandlerFunc { return errorHandler }
 
 func main() {
 	var err error
@@ -1505,9 +1530,6 @@ func main() {
 	// r.Use(sessions.Sessions("session", store))
 
 	// r.Use(jwtCachedAuthMiddleware())
-	// r.Use(steamAuthTicketMiddleware())
-
-	r.Use(errorMiddleware())
 
 	r.SetTrustedProxies([]string{"127.0.0.1"})
 
