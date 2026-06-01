@@ -1494,6 +1494,15 @@ func errorHandler(c *gin.Context) {
 	}
 }
 
+func requireContentTypeJson(c *gin.Context) {
+	if c.ContentType() != "application/json" {
+		c.AbortWithStatus(http.StatusUnsupportedMediaType)
+		return
+	}
+
+	c.Next()
+}
+
 func main() {
 	var err error
 
@@ -1534,20 +1543,20 @@ func main() {
 	r.SetTrustedProxies([]string{"127.0.0.1"})
 
 	r.GET("/shop/v1", listProductsHandler)
-	r.POST("/shop/purchase/v1", steamAuthTicketHandler, purchaseHandler)
+	r.POST("/shop/purchase/v1", requireContentTypeJson, steamAuthTicketHandler, purchaseHandler)
 
 	r.GET("/profile/v1", getProfileHandler)
 	r.GET("/profile/inventory/v1", steamAuthTicketHandler, getInventoryHandler)
-	r.POST("/profile/equip/v1", steamAuthTicketHandler, equipItemHandler)
+	r.POST("/profile/equip/v1", requireContentTypeJson, steamAuthTicketHandler, equipItemHandler)
 
 	r.GET("/match/v1", getMatchHandler)
-	r.POST("/match/v1", officialAuthHandler, recordMatchHandler)
+	r.POST("/match/v1", requireContentTypeJson, officialAuthHandler, recordMatchHandler)
 
 	r.GET("/accolades/v1", getAccoladesHandler)
 
 	r.GET("/achievements/v1", steamAuthTicketHandler, getAchievementsHandler)
-	r.POST("/achievements/v1", officialAuthHandler, progressAchievementHandler)
-	r.POST("/achievements/claim/v1", steamAuthTicketHandler, claimAchievementHandler)
+	r.POST("/achievements/v1", requireContentTypeJson, officialAuthHandler, progressAchievementHandler)
+	r.POST("/achievements/claim/v1", requireContentTypeJson, steamAuthTicketHandler, claimAchievementHandler)
 
 	if err := r.Run(":8080"); err != nil {
 		log.Fatalln(fmt.Errorf("unable to bind Gin engine to port 8080: %w", err))
