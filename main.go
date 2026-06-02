@@ -1510,7 +1510,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	db, err = sql.Open("sqlite3", "./data/tavernkeep.db")
+	db, err = sql.Open("sqlite3", "./data/tavernkeep.db?_journal_mode=WAL&_busy_timeout=200")
 
 	if err != nil {
 		log.Fatalln(fmt.Errorf("failed to open database: %w", err))
