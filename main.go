@@ -7,12 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go/ptr"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
@@ -95,6 +101,7 @@ type Match struct {
 var ErrNoSteamAuth = errors.New("no steam auth")
 var ErrNoOfficialAuth = errors.New("no official auth")
 var ErrDatabase = errors.New("database issue")
+var ErrReplaySave = errors.New("issue saving replay")
 var ErrMalformedBody = errors.New("malformed body")
 var ErrMalformedQuery = errors.New("malformed query")
 var ErrMalformedMatch = errors.New("malformed match")
@@ -106,6 +113,7 @@ var ErrProductDoesNotExist = errors.New("product does not exist")
 var ErrProductAlreadyOwned = errors.New("product already owned")
 var ErrProductCannotAfford = errors.New("cannot afford product")
 var ErrProductRequiresAccolade = errors.New("prerequisite accolade not in possession")
+var ErrUnsupportedGameMode = errors.New("unsupported game mode")
 
 func (m *Match) UnmarshalJSON(b []byte) error {
 	type aux Match
@@ -126,7 +134,7 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 			return fmt.Errorf("%w: team None must be null", ErrMalformedMatch)
 		}
 	} else {
-		return fmt.Errorf("%w: unknown gamemode", ErrMalformedMatch)
+		return fmt.Errorf("%w: unknown game mode", ErrMalformedMatch)
 	}
 
 	return nil
@@ -136,6 +144,7 @@ type OfficialMatch struct {
 	ID               int64     `json:"id" binding:"required"`
 	Recorded         time.Time `json:"recorded" binding:"required"`
 	OfficialIdentity string    `json:"officialIdentity" binding:"required"`
+	ReplayUrl        *string   `json:"replayUrl,omitempty"`
 
 	Match
 }
@@ -157,44 +166,11 @@ type AuthenticateUserTicket struct {
 }
 
 var (
-	steamApiKey string
-	db          *sql.DB
-
-	queryGemsStmt               *sql.Stmt
-	queryProductsStmt           *sql.Stmt
-	queryProductStmt            *sql.Stmt
-	queryEquipmentStmt          *sql.Stmt
-	queryInventoryStmt          *sql.Stmt
-	queryInventoryItemCountStmt *sql.Stmt
-	queryAccoladesStmt          *sql.Stmt
-	queryAccoladeStmt           *sql.Stmt
-
-	execEquipStmt      *sql.Stmt
-	execReduceGemsStmt *sql.Stmt
-	execInsertItemStmt *sql.Stmt
-
-	queryMatchStmt              *sql.Stmt
-	queryMatchesStmt            *sql.Stmt
-	queryMatchPlayerStmt        *sql.Stmt
-	queryMatchAdventureTeam     *sql.Stmt
-	queryMatchAdventureTeamBoss *sql.Stmt
-
-	execInsertMatchStmt              *sql.Stmt
-	execInsertMatchPlayerStmt        *sql.Stmt
-	execInsertMatchAdventureTeam     *sql.Stmt
-	execInsertMatchAdventureTeamBoss *sql.Stmt
-	execInsertMatchMetricStmt        *sql.Stmt
-
-	execIncreaseGemsStmt *sql.Stmt
-
-	queryAchievementDefsStmt *sql.Stmt
-	queryAchievementDefStmt  *sql.Stmt
-
-	queryAchievementsStmt *sql.Stmt
-	queryAchievementStmt  *sql.Stmt
-
-	execAchievementProgress *sql.Stmt
-	execAchievementClaim    *sql.Stmt
+	steamApiKey          string
+	db                   *sql.DB
+	s3Client             *s3.Client
+	replayBucket         string
+	replayOriginEndpoint string
 )
 
 func readSteamApiKey() (string, error) {
@@ -204,163 +180,6 @@ func readSteamApiKey() (string, error) {
 	}
 
 	return strings.TrimSpace(string(data)), nil
-}
-
-func prepareStatements() error {
-	var err error
-	if queryGemsStmt, err = db.Prepare("SELECT count FROM gem WHERE id = ?"); err != nil {
-		return err
-	}
-
-	if queryProductsStmt, err = db.Prepare("SELECT prototype, name, price, accolade, achievement FROM product WHERE available = TRUE"); err != nil {
-		return err
-	}
-
-	if queryProductStmt, err = db.Prepare("SELECT price, accolade, achievement FROM product WHERE available = TRUE AND prototype = ? AND name = ?"); err != nil {
-		return err
-	}
-
-	if queryEquipmentStmt, err = db.Prepare("SELECT prototype, name FROM item WHERE equipped = TRUE AND owner = ?"); err != nil {
-		return err
-	}
-
-	if queryInventoryStmt, err = db.Prepare("SELECT prototype, name, issued, purchase_price FROM item WHERE owner = ?"); err != nil {
-		return err
-	}
-
-	if queryInventoryItemCountStmt, err = db.Prepare("SELECT COUNT(*) FROM item WHERE prototype = ? AND name = ? AND owner = ?"); err != nil {
-		return err
-	}
-
-	if queryAccoladesStmt, err = db.Prepare("SELECT name, owner FROM accolade"); err != nil {
-		return err
-	}
-
-	if queryAccoladeStmt, err = db.Prepare("SELECT owner FROM accolade WHERE name = ?"); err != nil {
-		return err
-	}
-
-	// Subquery: Set equipped with matching name to 1, and all non-matching 0 (un-equip everything else)
-	if execEquipStmt, err = db.Prepare(`UPDATE item
-SET equipped = CASE
-   WHEN name = ? THEN 1
-   ELSE 0
-END
-WHERE prototype = ?
- AND owner = ?`); err != nil {
-		return err
-	}
-
-	if execReduceGemsStmt, err = db.Prepare("UPDATE gem SET count = count - ? WHERE count >= ? AND id = ?"); err != nil {
-		return err
-	}
-
-	if execInsertItemStmt, err = db.Prepare("INSERT INTO item (prototype, name, owner, purchase_price, accolade) VALUES (?, ?, ?, ?, ?) RETURNING issued"); err != nil {
-		return err
-	}
-
-	if queryMatchStmt, err = db.Prepare("SELECT start, end, game_mode, recorded, official_identity_subject FROM match WHERE id = ?"); err != nil {
-		return err
-	}
-
-	if queryMatchesStmt, err = db.Prepare("SELECT match_id FROM match_player WHERE id = ?"); err != nil {
-		return err
-	}
-
-	if queryMatchPlayerStmt, err = db.Prepare("SELECT id, name, team, reward, kills, deaths FROM match_player WHERE match_id = ?"); err != nil {
-		return err
-	}
-
-	if queryMatchAdventureTeam, err = db.Prepare("SELECT team, points FROM match_pvpa_team WHERE match_id = ? ORDER BY team DESC"); err != nil {
-		return err
-	}
-
-	if queryMatchAdventureTeamBoss, err = db.Prepare("SELECT team, id, first_blood FROM match_pvpa_team_boss WHERE match_id = ?"); err != nil {
-		return err
-	}
-
-	if execInsertMatchStmt, err = db.Prepare("INSERT INTO match (start, end, game_mode, official_identity_subject, official_identity_fingerprint) VALUES (?, ?, ?, ?, ?) RETURNING id, recorded"); err != nil {
-		return err
-	}
-
-	if execInsertMatchPlayerStmt, err = db.Prepare("INSERT INTO match_player (match_id, id, name, team, reward, kills, deaths) VALUES (?, ?, ?, ?, ?, ?, ?)"); err != nil {
-		return err
-	}
-
-	if execInsertMatchAdventureTeam, err = db.Prepare("INSERT INTO match_pvpa_team (match_id, team, points) VALUES (?, ?, ?)"); err != nil {
-		return err
-	}
-
-	if execInsertMatchAdventureTeamBoss, err = db.Prepare("INSERT INTO match_pvpa_team_boss (match_id, team, id, first_blood) VALUES (?, ?, ?, ?)"); err != nil {
-		return err
-	}
-
-	if execInsertMatchMetricStmt, err = db.Prepare("INSERT INTO match_metric (match_id, key, value) VALUES (?, ?, ?)"); err != nil {
-		return err
-	}
-
-	if execIncreaseGemsStmt, err = db.Prepare("INSERT INTO gem (id, count) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET count=count + excluded.count"); err != nil {
-		return err
-	}
-
-	if queryAchievementDefsStmt, err = db.Prepare("SELECT name, target, reward FROM achievement_def WHERE game_mode = ?"); err != nil {
-		return err
-	}
-
-	if queryAchievementDefStmt, err = db.Prepare("SELECT target, reward, no_ext_mut FROM achievement_def WHERE name = ? AND game_mode = ?"); err != nil {
-		return err
-	}
-
-	if queryAchievementsStmt, err = db.Prepare("SELECT name, progress, claimed, claimed_at FROM achievement WHERE game_mode = ? AND id = ?"); err != nil {
-		return err
-	}
-
-	if queryAchievementStmt, err = db.Prepare("SELECT progress, claimed, claimed_at FROM achievement WHERE name = ? AND game_mode = ? AND id = ?"); err != nil {
-		return err
-	}
-
-	if execAchievementProgress, err = db.Prepare("INSERT INTO achievement (name, game_mode, id, progress) VALUES (?, ?, ?, ?) ON CONFLICT(name, game_mode, id) DO UPDATE SET progress=? WHERE claimed IS NULL AND claimed_at IS NULL"); err != nil {
-		return err
-	}
-
-	if execAchievementClaim, err = db.Prepare("UPDATE achievement SET claimed=?, claimed_at=unixepoch() WHERE name=? AND game_mode=? AND id=? AND progress=? AND claimed_at IS NULL AND claimed_at IS NULL RETURNING claimed_at, progress"); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func closeStatements() {
-	execAchievementClaim.Close()
-	execAchievementProgress.Close()
-	queryAchievementStmt.Close()
-	queryAchievementsStmt.Close()
-	queryAchievementDefStmt.Close()
-	queryAchievementDefsStmt.Close()
-	execIncreaseGemsStmt.Close()
-	execInsertMatchMetricStmt.Close()
-	execInsertMatchAdventureTeamBoss.Close()
-	execInsertMatchAdventureTeam.Close()
-	execInsertMatchPlayerStmt.Close()
-	execInsertMatchStmt.Close()
-
-	queryMatchAdventureTeamBoss.Close()
-	queryMatchAdventureTeam.Close()
-	queryMatchPlayerStmt.Close()
-	queryMatchesStmt.Close()
-	queryMatchStmt.Close()
-
-	execInsertItemStmt.Close()
-	execReduceGemsStmt.Close()
-	execEquipStmt.Close()
-	queryAccoladeStmt.Close()
-	queryAccoladesStmt.Close()
-	queryInventoryItemCountStmt.Close()
-	queryInventoryStmt.Close()
-	queryEquipmentStmt.Close()
-	queryProductStmt.Close()
-	queryProductsStmt.Close()
-	queryGemsStmt.Close()
 }
 
 func jwtCachedAuthHandler(c *gin.Context) {
@@ -833,7 +652,7 @@ func getMatchHandler(c *gin.Context) {
 		}
 
 		var start, end, recorded int64
-		if err := txQueryMatchStmt.QueryRow(match.ID).Scan(&start, &end, &match.GameMode, &recorded, &match.OfficialIdentity); err != nil {
+		if err := txQueryMatchStmt.QueryRow(match.ID).Scan(&start, &end, &match.GameMode, &recorded, &match.ReplayUrl, &match.OfficialIdentity); err != nil {
 			c.Error(errors.Join(ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
@@ -952,31 +771,13 @@ func getMatchHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, matches)
 }
 
-func recordMatchHandler(c *gin.Context) {
-	officialAny, hasOfficial := c.Get("official")
-	if !hasOfficial {
-		abortStatusError(c, http.StatusUnauthorized, ErrNoOfficialAuth)
-		return
-	}
+type PostRecordMatchBody struct {
+	Replay  *multipart.FileHeader `form:"replay" binding:"required"`
+	Payload string                `form:"payload" binding:"required"`
+}
 
-	official := officialAny.(OfficialIdentity)
-
-	var m Match
-	if err := c.ShouldBindJSON(&m); err != nil {
-		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedBody, err))
-		return
-	}
-
+func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialIdentity) (OfficialMatch, error) {
 	mRes := OfficialMatch{Match: m, OfficialIdentity: official.Subject}
-
-	// FIXME: nil context? BAD!!!
-	tx, err := db.BeginTx(context.TODO(), nil)
-	if err != nil {
-		c.Error(errors.Join(ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return
-	}
-	defer tx.Rollback()
 
 	// FIXME: MORE CONTEXT!!
 	txExecInsertMatchStmt := tx.Stmt(execInsertMatchStmt)
@@ -998,33 +799,33 @@ func recordMatchHandler(c *gin.Context) {
 	if err := txExecInsertMatchStmt.QueryRow(m.Start.Unix(), m.End.Unix(), m.GameMode, official.Subject, official.Fingerprint).Scan(&mRes.ID, &recorded); err != nil {
 		c.Error(errors.Join(ErrDatabase, err))
 		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return
+		return OfficialMatch{}, err
 	}
 
 	mRes.Recorded = time.Unix(recorded, 0)
 
 	for id, player := range m.Players {
-		if _, err = txExecInsertMatchPlayerStmt.Exec(mRes.ID, id, player.Name, player.Team, player.Reward, player.Kills, player.Deaths); err != nil {
+		if _, err := txExecInsertMatchPlayerStmt.Exec(mRes.ID, id, player.Name, player.Team, player.Reward, player.Kills, player.Deaths); err != nil {
 			c.Error(errors.Join(ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return
+			return OfficialMatch{}, err
 		}
 
 		if player.Reward > 0 {
-			if _, err = txExecIncreaseGemsStmt.Exec(id, player.Reward); err != nil {
+			if _, err := txExecIncreaseGemsStmt.Exec(id, player.Reward); err != nil {
 				c.Error(errors.Join(ErrDatabase, err))
 				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return
+				return OfficialMatch{}, err
 			}
 
 		}
 	}
 
 	for key, value := range m.Metrics {
-		if _, err = txExecInsertMatchMetricStmt.Exec(mRes.ID, key, value); err != nil {
+		if _, err := txExecInsertMatchMetricStmt.Exec(mRes.ID, key, value); err != nil {
 			c.Error(errors.Join(ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return
+			return OfficialMatch{}, err
 		}
 	}
 
@@ -1036,20 +837,54 @@ func recordMatchHandler(c *gin.Context) {
 
 		teamNumber := i + 1
 
-		if _, err = txExecInsertMatchAdventureTeam.Exec(mRes.ID, teamNumber, team.Points); err != nil {
+		if _, err := txExecInsertMatchAdventureTeam.Exec(mRes.ID, teamNumber, team.Points); err != nil {
 			c.Error(errors.Join(ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return
+			return OfficialMatch{}, err
 		}
 
 		for _, boss := range team.Bosses {
 			// TODO: implement first blood bosses here!
-			if _, err = txExecInsertMatchAdventureTeamBoss.Exec(mRes.ID, teamNumber, boss, false); err != nil {
+			if _, err := txExecInsertMatchAdventureTeamBoss.Exec(mRes.ID, teamNumber, boss, false); err != nil {
 				c.Error(errors.Join(ErrDatabase, err))
 				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return
+				return OfficialMatch{}, err
 			}
 		}
+	}
+
+	return mRes, nil
+}
+
+func recordMatchHandler(c *gin.Context) {
+	// TODO: i don't believe this check is needed and it could be removed
+	officialAny, hasOfficial := c.Get("official")
+	if !hasOfficial {
+		abortStatusError(c, http.StatusUnauthorized, ErrNoOfficialAuth)
+		return
+	}
+
+	official := officialAny.(OfficialIdentity)
+
+	var m Match
+	if err := c.ShouldBind(&m); err != nil {
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedBody, err))
+		return
+	}
+
+	// FIXME: nil context? BAD!!!
+	tx, err := db.BeginTx(context.TODO(), nil)
+	if err != nil {
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return
+	}
+
+	defer tx.Rollback()
+
+	mRes, err := recordMatchPayload(c, tx, m, official)
+	if err != nil {
+		return
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1057,6 +892,100 @@ func recordMatchHandler(c *gin.Context) {
 		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
+
+	c.JSON(http.StatusOK, mRes)
+}
+
+func recordMatchReplayHandler(c *gin.Context) {
+	// TODO: i don't believe this check is needed and it could be removed
+	officialAny, hasOfficial := c.Get("official")
+	if !hasOfficial {
+		abortStatusError(c, http.StatusUnauthorized, ErrNoOfficialAuth)
+		return
+	}
+
+	official := officialAny.(OfficialIdentity)
+
+	var body PostRecordMatchBody
+	if err := c.ShouldBind(&body); err != nil {
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedBody, err))
+		return
+	}
+
+	// TODO: this should be required to have Content-Type: application/json
+	// 		 it seems that this behavior is not possible to implement with gin at the moment.
+	var m Match
+	if err := json.Unmarshal([]byte(body.Payload), &m); err != nil {
+		abortStatusError(c, http.StatusBadRequest, errors.Join(ErrMalformedBody, err))
+		return
+	}
+
+	// FIXME: nil context? BAD!!!
+	tx, err := db.BeginTx(context.TODO(), nil)
+	if err != nil {
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return
+	}
+
+	defer tx.Rollback()
+
+	txExecUpdateMatchReplayStmt := tx.Stmt(execUpdateMatchReplayStmt)
+	defer txExecUpdateMatchReplayStmt.Close()
+
+	mRes, err := recordMatchPayload(c, tx, m, official)
+	if err != nil {
+		return
+	}
+
+	replay, err := body.Replay.Open()
+	if err != nil {
+		c.Error(errors.Join(ErrReplaySave, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrReplaySave)
+		return
+	}
+	defer replay.Close()
+
+	var fileGameMode string
+	switch mRes.GameMode {
+	case "pvpa":
+		fileGameMode = "TPVPA"
+	default:
+		c.Error(fmt.Errorf("%w: using provided game mode for replay file name (%s)", ErrUnsupportedGameMode, mRes.GameMode))
+		fileGameMode = mRes.GameMode
+	}
+
+	// FIXME: nil context? BAD!!!
+	_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket: &replayBucket,
+		Key:    aws.String(fmt.Sprintf("%s %d.reese", fileGameMode, mRes.ID)),
+		Body:   replay,
+		ACL:    types.ObjectCannedACLPublicRead,
+	})
+
+	// FIXME: put legal hold/lock
+
+	if err != nil {
+		c.Error(errors.Join(ErrReplaySave, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrReplaySave)
+		return
+	}
+
+	replayUrl := fmt.Sprintf("%s/%d.reese", replayOriginEndpoint, mRes.ID)
+	if _, err := txExecUpdateMatchReplayStmt.Exec(replayUrl, mRes.ID); err != nil {
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return
+	}
+
+	// FIXME: need to undo the replay upload then!
+	if err := tx.Commit(); err != nil {
+		c.Error(errors.Join(ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return
+	}
+
+	mRes.ReplayUrl = ptr.String(replayUrl)
 
 	c.JSON(http.StatusOK, mRes)
 }
@@ -1369,6 +1298,11 @@ func claimAchievementHandler(c *gin.Context) {
 }
 
 const dbSchema = `
+pragma journal_mode = WAL;
+pragma busy_timeout = 5000;
+pragma synchronous = normal;
+pragma mmap_size = 30000000000;
+
 CREATE TABLE IF NOT EXISTS gem (
     id TEXT NOT NULL,
     count INTEGER NOT NULL DEFAULT 0,
@@ -1407,6 +1341,7 @@ CREATE TABLE IF NOT EXISTS match (
 	end INTEGER NOT NULL,
 	game_mode TEXT NOT NULL,
 	recorded INTEGER NOT NULL DEFAULT (unixepoch()),
+	replay_url TEXT,
 	official_identity_subject TEXT NOT NULL,
 	official_identity_fingerprint TEXT NOT NULL
 );
@@ -1503,19 +1438,50 @@ func requireContentTypeJson(c *gin.Context) {
 	c.Next()
 }
 
+func requireContentTypeMultipartForm(c *gin.Context) {
+	if c.ContentType() != "multipart/form-data" {
+		c.AbortWithStatus(http.StatusUnsupportedMediaType)
+		return
+	}
+
+	c.Next()
+}
+
+func initS3() error {
+	replayBucket = os.Getenv("TAVERNKEEP_REPLAY_BUCKET")
+	replayOriginEndpoint = os.Getenv("TAVERNKEEP_REPLAY_ORIGIN_ENDPOINT")
+
+	ctx := context.Background()
+
+	sdkConfig, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	s3Client = s3.NewFromConfig(sdkConfig)
+
+	return nil
+}
+
 func main() {
+	if err := initS3(); err != nil {
+		log.Fatalln(err)
+	}
+
 	var err error
 
 	if steamApiKey, err = readSteamApiKey(); err != nil {
 		log.Fatalln(err)
 	}
 
-	db, err = sql.Open("sqlite3", "./data/tavernkeep.db?_journal_mode=WAL&_busy_timeout=200")
+	db, err = sql.Open("sqlite3", "./data/tavernkeep.db?_txlock=immediate")
 
 	if err != nil {
 		log.Fatalln(fmt.Errorf("failed to open database: %w", err))
 	}
 	defer db.Close()
+
+	db.SetMaxOpenConns(1)
 
 	if _, err = db.Exec(dbSchema); err != nil {
 		log.Fatalln(fmt.Errorf("failed to exec database schema: %w", err))
@@ -1551,6 +1517,7 @@ func main() {
 
 	r.GET("/match/v1", getMatchHandler)
 	r.POST("/match/v1", requireContentTypeJson, officialAuthHandler, recordMatchHandler)
+	r.POST("/match/v2", requireContentTypeMultipartForm, officialAuthHandler, recordMatchReplayHandler)
 
 	r.GET("/accolades/v1", getAccoladesHandler)
 
