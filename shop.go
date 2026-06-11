@@ -20,9 +20,9 @@ type ProductItemRef struct {
 type Product struct {
 	ProductItemRef
 
-	Price       uint32  `json:"price" binding:"required"`
-	Accolade    *string `json:"accolade,omitempty"`
-	Achievement *string `json:"achievement,omitempty"`
+	Price       uint32          `json:"price" binding:"required"`
+	Accolade    *string         `json:"accolade,omitempty"`
+	Achievement *AchievementRef `json:"achievement,omitempty"`
 }
 
 // Item represents an owned item.
@@ -39,7 +39,19 @@ func listProductsHandler(c *gin.Context) {
 		return
 	}
 
-	rows, err := queryProductsStmt.Query()
+	// FIXME: nil context? BAD!!!
+	tx, err := db.BeginTx(context.TODO(), nil)
+	if err != nil {
+		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return
+	}
+	defer tx.Rollback()
+
+	txQueryProductsStmt := tx.Stmt(queryProductsStmt)
+	defer txQueryProductsStmt.Close()
+
+	rows, err := txQueryProductsStmt.Query()
 	if err != nil {
 		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
@@ -48,17 +60,33 @@ func listProductsHandler(c *gin.Context) {
 	defer rows.Close()
 
 	products := []Product{}
-	var product Product
 	for rows.Next() {
-		if err := rows.Scan(&product.Prototype, &product.Name, &product.Price, &product.Accolade, &product.Achievement); err != nil {
+		var product Product
+		var achieveGameMode, achieveName *string
+
+		if err := rows.Scan(&product.Prototype, &product.Name, &product.Price, &product.Accolade, &achieveGameMode, &achieveName); err != nil {
 			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
+
+		if achieveGameMode != nil && achieveName != nil {
+			product.Achievement = &AchievementRef{
+				Name:     *achieveName,
+				GameMode: *achieveGameMode,
+			}
+		}
+
 		products = append(products, product)
 	}
 
 	if err := rows.Err(); err != nil {
+		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
 		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
@@ -122,8 +150,8 @@ func purchaseProductHandler(c *gin.Context) {
 		return
 	}
 
-	var accolade, achievement *string
-	err = txQueryProductStmt.QueryRow(item.Prototype, item.Name).Scan(&item.PurchasePrice, &accolade, &achievement)
+	var accolade, achieve_game_mode, achieve_name *string
+	err = txQueryProductStmt.QueryRow(item.Prototype, item.Name).Scan(&item.PurchasePrice, &accolade, &achieve_game_mode, &achieve_name)
 
 	if err == sql.ErrNoRows {
 		abortStatusError(c, http.StatusNotFound, ErrProductDoesNotExist)
@@ -138,13 +166,32 @@ func purchaseProductHandler(c *gin.Context) {
 		txQueryAccoladeStmt := tx.Stmt(queryAccoladeStmt)
 		defer txQueryAccoladeStmt.Close()
 
-		var owner string
-		if err = txQueryAccoladeStmt.QueryRow(*accolade).Scan(&owner); err == sql.ErrNoRows || id != owner {
-			abortStatusError(c, http.StatusForbidden, ErrProductRequiresAccolade)
-			return
-		} else if err != nil {
+		var count int
+		if err = txQueryAccoladeStmt.QueryRow(*accolade, id).Scan(&count); err != nil {
 			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			return
+		}
+
+		if count <= 0 {
+			abortStatusError(c, http.StatusForbidden, ErrProductRequiresAccolade)
+			return
+		}
+	}
+
+	if achieve_name != nil && achieve_game_mode != nil {
+		txQueryAchievementClaimedStmt := tx.Stmt(queryAchievementClaimedStmt)
+		defer txQueryAchievementClaimedStmt.Close()
+
+		var count int
+		if err = txQueryAchievementClaimedStmt.QueryRow(achieve_name, achieve_game_mode, id).Scan(&count); err != nil {
+			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			return
+		}
+
+		if count <= 0 {
+			abortStatusError(c, http.StatusForbidden, ErrProductRequiresAchievement)
 			return
 		}
 	}

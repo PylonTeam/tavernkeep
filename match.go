@@ -26,6 +26,7 @@ type Player struct {
 
 	Kills  int32 `json:"kills" binding:"required"`
 	Deaths int32 `json:"deaths" binding:"required"`
+	Winner bool  `json:"winner,omitempty"`
 
 	Stats     map[string]uint32           `json:"stats" binding:"required"`
 	ItemStats map[string]map[int32]uint32 `json:"itemStats" binding:"required"`
@@ -163,7 +164,7 @@ func getMatchHandler(c *gin.Context) {
 			var id uint64
 			var player Player
 
-			if err := rows.Scan(&id, &player.Name, &player.Team, &player.Reward, &player.Kills, &player.Deaths); err != nil {
+			if err := rows.Scan(&id, &player.Name, &player.Team, &player.Reward, &player.Kills, &player.Deaths, &player.Winner); err != nil {
 				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 				return
@@ -354,7 +355,7 @@ func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialId
 	mRes.Recorded = time.Unix(recorded, 0)
 
 	for id, player := range m.Players {
-		if _, err := txExecInsertMatchPlayerStmt.Exec(mRes.ID, id, player.Name, player.Team, player.Reward, player.Kills, player.Deaths); err != nil {
+		if _, err := txExecInsertMatchPlayerStmt.Exec(mRes.ID, id, player.Name, player.Team, player.Reward, player.Kills, player.Deaths, player.Winner); err != nil {
 			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return CompletedMatch{}, err

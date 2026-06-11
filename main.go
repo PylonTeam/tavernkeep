@@ -33,6 +33,7 @@ var ErrProductDoesNotExist = errors.New("product does not exist")
 var ErrProductAlreadyOwned = errors.New("product already owned")
 var ErrProductCannotAfford = errors.New("cannot afford product")
 var ErrProductRequiresAccolade = errors.New("prerequisite accolade not in possession")
+var ErrProductRequiresAchievement = errors.New("prerequisite achievement has not been claimed")
 var ErrUnsupportedGameMode = errors.New("unsupported game mode")
 var ErrVersion = errors.New("check version")
 

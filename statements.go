@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS product (
     name TEXT NOT NULL,
     price INTEGER NOT NULL,
     accolade TEXT,
-    achievement TEXT,
+    achieve_game_mode TEXT,
+    achieve_name TEXT,
     available INTEGER NOT NULL DEFAULT FALSE,
     CONSTRAINT pk PRIMARY KEY (prototype, name),
     CONSTRAINT price_check CHECK (price >= 0),
@@ -59,8 +60,10 @@ CREATE TABLE IF NOT EXISTS match_player (
 	reward INTEGER NOT NULL DEFAULT 0,
 	kills INTEGER NOT NULL,
 	deaths INTEGER NOT NULL,
+	winner INTEGER NOT NULL,
 	CONSTRAINT pk PRIMARY KEY (match_id, id),
-	CONSTRAINT reward_check CHECK (reward >= 0)
+	CONSTRAINT reward_check CHECK (reward >= 0),
+	CONSTRAINT winner_check CHECK (winner IN (FALSE, TRUE))
 );
 
 CREATE TABLE IF NOT EXISTS match_player_stat (
@@ -178,8 +181,9 @@ var (
 
 	execIncreaseGemsStmt *sql.Stmt
 
-	queryAchievementDefsStmt *sql.Stmt
-	queryAchievementDefStmt  *sql.Stmt
+	queryAchievementDefsStmt    *sql.Stmt
+	queryAchievementDefStmt     *sql.Stmt
+	queryAchievementClaimedStmt *sql.Stmt
 
 	queryAchievementsStmt *sql.Stmt
 	queryAchievementStmt  *sql.Stmt
@@ -194,11 +198,11 @@ func prepareStatements() error {
 		return err
 	}
 
-	if queryProductsStmt, err = db.Prepare("SELECT prototype, name, price, accolade, achievement FROM product WHERE available = TRUE"); err != nil {
+	if queryProductsStmt, err = db.Prepare("SELECT prototype, name, price, accolade, achieve_game_mode, achieve_name FROM product WHERE available = TRUE"); err != nil {
 		return err
 	}
 
-	if queryProductStmt, err = db.Prepare("SELECT price, accolade, achievement FROM product WHERE available = TRUE AND prototype = ? AND name = ?"); err != nil {
+	if queryProductStmt, err = db.Prepare("SELECT price, accolade, achieve_game_mode, achieve_name FROM product WHERE available = TRUE AND prototype = ? AND name = ?"); err != nil {
 		return err
 	}
 
@@ -210,7 +214,7 @@ func prepareStatements() error {
 		return err
 	}
 
-	if queryInventoryItemCountStmt, err = db.Prepare("SELECT COUNT(*) FROM item WHERE prototype = ? AND name = ? AND owner = ?"); err != nil {
+	if queryInventoryItemCountStmt, err = db.Prepare("SELECT COUNT() FROM item WHERE prototype = ? AND name = ? AND owner = ?"); err != nil {
 		return err
 	}
 
@@ -218,7 +222,7 @@ func prepareStatements() error {
 		return err
 	}
 
-	if queryAccoladeStmt, err = db.Prepare("SELECT owner FROM accolade WHERE name = ?"); err != nil {
+	if queryAccoladeStmt, err = db.Prepare("SELECT COUNT() FROM accolade WHERE name = ? AND owner = ?"); err != nil {
 		return err
 	}
 
@@ -249,7 +253,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if queryMatchPlayerStmt, err = db.Prepare("SELECT id, name, team, reward, kills, deaths FROM match_player WHERE match_id = ?"); err != nil {
+	if queryMatchPlayerStmt, err = db.Prepare("SELECT id, name, team, reward, kills, deaths, winner FROM match_player WHERE match_id = ?"); err != nil {
 		return err
 	}
 
@@ -277,7 +281,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if execInsertMatchPlayerStmt, err = db.Prepare("INSERT INTO match_player (match_id, id, name, team, reward, kills, deaths) VALUES (?, ?, ?, ?, ?, ?, ?)"); err != nil {
+	if execInsertMatchPlayerStmt, err = db.Prepare("INSERT INTO match_player (match_id, id, name, team, reward, kills, deaths, winner) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"); err != nil {
 		return err
 	}
 
@@ -310,6 +314,10 @@ WHERE prototype = ?
 	}
 
 	if queryAchievementDefStmt, err = db.Prepare("SELECT target, reward, no_ext_mut FROM achievement_def WHERE name = ? AND game_mode = ?"); err != nil {
+		return err
+	}
+
+	if queryAchievementClaimedStmt, err = db.Prepare("SELECT COUNT() FROM achievement WHERE name = ? AND game_mode = ? AND id = ? AND claimed IS NOT NULL and claimed_at IS NOT NULL"); err != nil {
 		return err
 	}
 

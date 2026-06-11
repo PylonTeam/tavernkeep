@@ -10,6 +10,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type AchievementRef struct {
+	Name     string `json:"name" binding:"required"`
+	GameMode string `json:"gameMode" binding:"required"`
+}
+
 type AchievementDef struct {
 	Target uint32 `json:"target" binding:"required"`
 	Reward uint32 `json:"reward" binding:"required"`
@@ -132,12 +137,9 @@ func getAchievementsHandler(c *gin.Context) {
 
 func progressAchievementHandler(c *gin.Context) {
 	type requestBody struct {
-		ID          uint64 `json:"id,string" binding:"required"`
-		Achievement struct {
-			Name     string `json:"name" binding:"required"`
-			GameMode string `json:"gameMode" binding:"required"`
-		} `json:"achievement" binding:"required"`
-		Delta *uint32 `json:"delta,omitempty"`
+		ID          uint64         `json:"id,string" binding:"required"`
+		Achievement AchievementRef `json:"achievement" binding:"required"`
+		Delta       *uint32        `json:"delta,omitempty"`
 	}
 
 	var b requestBody
@@ -229,8 +231,7 @@ func claimAchievementHandler(c *gin.Context) {
 	}
 
 	type requestBody struct {
-		Name     string `json:"name" binding:"required"`
-		GameMode string `json:"gameMode" binding:"required"`
+		AchievementRef
 	}
 	var b requestBody
 	if err := c.ShouldBindJSON(&b); err != nil {
