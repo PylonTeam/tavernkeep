@@ -211,6 +211,8 @@ func main() {
 	r.POST("/achievements/:v", requireVersionHandler, requireContentTypeJson, officialAuthHandler, progressAchievementHandler)
 	r.POST("/achievements/claim/:v", requireVersionHandler, requireContentTypeJson, steamAuthTicketHandler, claimAchievementHandler)
 
+	r.GET("/leaderboard/:v", requireVersionHandler, calcLeaderboardHandler)
+
 	if err := r.Run(":8080"); err != nil {
 		log.Fatalln(fmt.Errorf("unable to bind Gin engine to port 8080: %w", err))
 	}

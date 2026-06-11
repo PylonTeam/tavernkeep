@@ -188,8 +188,13 @@ var (
 	queryAchievementsStmt *sql.Stmt
 	queryAchievementStmt  *sql.Stmt
 
-	execAchievementProgress *sql.Stmt
-	execAchievementClaim    *sql.Stmt
+	execAchievementProgressStmt *sql.Stmt
+	execAchievementClaimStmt    *sql.Stmt
+
+	queryMatchAggregatePlayerStmt           *sql.Stmt
+	queryMatchAggregatePlayerStatStmt       *sql.Stmt
+	queryMatchAggregatePlayerItemStatStmt   *sql.Stmt
+	queryMatchAggregatePlayerTeamPointsStmt *sql.Stmt
 )
 
 func prepareStatements() error {
@@ -329,11 +334,32 @@ WHERE prototype = ?
 		return err
 	}
 
-	if execAchievementProgress, err = db.Prepare("INSERT INTO achievement (name, game_mode, id, progress) VALUES (?, ?, ?, ?) ON CONFLICT(name, game_mode, id) DO UPDATE SET progress=? WHERE claimed IS NULL AND claimed_at IS NULL"); err != nil {
+	if execAchievementProgressStmt, err = db.Prepare("INSERT INTO achievement (name, game_mode, id, progress) VALUES (?, ?, ?, ?) ON CONFLICT(name, game_mode, id) DO UPDATE SET progress=? WHERE claimed IS NULL AND claimed_at IS NULL"); err != nil {
 		return err
 	}
 
-	if execAchievementClaim, err = db.Prepare("UPDATE achievement SET claimed=?, claimed_at=unixepoch() WHERE name=? AND game_mode=? AND id=? AND progress=? AND claimed_at IS NULL AND claimed_at IS NULL RETURNING claimed_at, progress"); err != nil {
+	if execAchievementClaimStmt, err = db.Prepare("UPDATE achievement SET claimed=?, claimed_at=unixepoch() WHERE name=? AND game_mode=? AND id=? AND progress=? AND claimed_at IS NULL AND claimed_at IS NULL RETURNING claimed_at, progress"); err != nil {
+		return err
+	}
+
+	if queryMatchAggregatePlayerStmt, err = db.Prepare("SELECT id, name, SUM(kills), SUM(deaths), SUM(winner), COUNT() FROM match_player GROUP BY id ORDER BY SUM(winner) DESC"); err != nil {
+		return err
+	}
+
+	if queryMatchAggregatePlayerStatStmt, err = db.Prepare("SELECT key, SUM(value) FROM match_player_stat WHERE id = ? GROUP BY id, key"); err != nil {
+		return err
+	}
+
+	if queryMatchAggregatePlayerItemStatStmt, err = db.Prepare("SELECT key, item, SUM(value) FROM match_player_item_stat WHERE id = ? GROUP BY id, key, item"); err != nil {
+		return err
+	}
+
+	if queryMatchAggregatePlayerTeamPointsStmt, err = db.Prepare(`SELECT COALESCE(SUM(mpt.points), 0)
+FROM match_player mp
+LEFT JOIN match_pvpa_team mpt
+    ON mp.match_id = mpt.match_id
+    AND mp.team = mpt.team
+WHERE mp.id = ?`); err != nil {
 		return err
 	}
 
@@ -341,10 +367,15 @@ WHERE prototype = ?
 }
 
 func closeStatements() {
-	execAchievementClaim.Close()
-	execAchievementProgress.Close()
+	queryMatchAggregatePlayerTeamPointsStmt.Close()
+	queryMatchAggregatePlayerItemStatStmt.Close()
+	queryMatchAggregatePlayerStatStmt.Close()
+	queryMatchAggregatePlayerStmt.Close()
+	execAchievementClaimStmt.Close()
+	execAchievementProgressStmt.Close()
 	queryAchievementStmt.Close()
 	queryAchievementsStmt.Close()
+	queryAchievementClaimedStmt.Close()
 	queryAchievementDefStmt.Close()
 	queryAchievementDefsStmt.Close()
 	execIncreaseGemsStmt.Close()

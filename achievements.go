@@ -166,8 +166,8 @@ func progressAchievementHandler(c *gin.Context) {
 	defer txQueryAchievementDefStmt.Close()
 	txQueryAchievementStmt := tx.Stmt(queryAchievementStmt)
 	defer txQueryAchievementStmt.Close()
-	txExecAchievementProgress := tx.Stmt(execAchievementProgress)
-	defer txExecAchievementProgress.Close()
+	txExecAchievementProgressStmt := tx.Stmt(execAchievementProgressStmt)
+	defer txExecAchievementProgressStmt.Close()
 
 	a := Achievement{}
 	var noExtMut bool
@@ -207,7 +207,7 @@ func progressAchievementHandler(c *gin.Context) {
 	}
 
 	if a.Progress != initialProgress {
-		if _, err = txExecAchievementProgress.Exec(b.Achievement.Name, b.Achievement.GameMode, b.ID, a.Progress, a.Progress); err != nil {
+		if _, err = txExecAchievementProgressStmt.Exec(b.Achievement.Name, b.Achievement.GameMode, b.ID, a.Progress, a.Progress); err != nil {
 			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
@@ -250,8 +250,8 @@ func claimAchievementHandler(c *gin.Context) {
 
 	txQueryAchievementDefStmt := tx.Stmt(queryAchievementDefStmt)
 	defer txQueryAchievementDefStmt.Close()
-	txExecAchievementClaim := tx.Stmt(execAchievementClaim)
-	defer txExecAchievementClaim.Close()
+	txExecAchievementClaimTx := tx.Stmt(execAchievementClaimStmt)
+	defer txExecAchievementClaimTx.Close()
 	txExecIncreaseGemsStmt := tx.Stmt(execIncreaseGemsStmt)
 	defer txExecIncreaseGemsStmt.Close()
 
@@ -268,7 +268,7 @@ func claimAchievementHandler(c *gin.Context) {
 	}
 
 	var claimed_at int64
-	if err = txExecAchievementClaim.QueryRow(a.Reward, b.Name, b.GameMode, id, a.Target).Scan(&claimed_at, &a.Progress); err == sql.ErrNoRows {
+	if err = txExecAchievementClaimTx.QueryRow(a.Reward, b.Name, b.GameMode, id, a.Target).Scan(&claimed_at, &a.Progress); err == sql.ErrNoRows {
 		c.Status(http.StatusBadRequest)
 		return
 	} else if err != nil {
