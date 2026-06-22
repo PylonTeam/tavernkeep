@@ -68,7 +68,7 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 			return fmt.Errorf("%w: team None must be null", ErrMalformedMatch)
 		}
 	} else if m.GameMode != "ctg" {
-		return fmt.Errorf("%w: unknown game mode", ErrMalformedMatch)
+		return fmt.Errorf("%w: unknown game mode: %s", ErrMalformedMatch, m.GameMode)
 	}
 
 	return nil
