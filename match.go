@@ -46,7 +46,6 @@ type Match struct {
 	Players map[uint64]Player `json:"players" binding:"required"`
 	Metrics map[string]string `json:"metrics,omitempty" binding:"required"`
 
-	// Assume PvP Adventure
 	Teams []*Team `json:"teams" binding:"required"`
 }
 
@@ -68,7 +67,7 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 		if m.Teams[0] != nil {
 			return fmt.Errorf("%w: team None must be null", ErrMalformedMatch)
 		}
-	} else {
+	} else if m.GameMode != "ctg" {
 		return fmt.Errorf("%w: unknown game mode", ErrMalformedMatch)
 	}
 
