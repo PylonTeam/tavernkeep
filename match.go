@@ -13,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/aws/smithy-go/ptr"
 	"github.com/gin-gonic/gin"
 )
 
@@ -346,52 +345,118 @@ func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialId
 
 	var recorded int64
 	if err := txExecInsertMatchStmt.QueryRow(m.Start.Unix(), m.End.Unix(), m.GameMode, official.Subject, official.Fingerprint).Scan(&mRes.ID, &recorded); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+		completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(completeErr)
 		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return CompletedMatch{}, err
+		return CompletedMatch{}, completeErr
 	}
 
 	mRes.Recorded = time.Unix(recorded, 0)
 
+	type recordMostKills struct {
+		id    []uint64
+		count uint32
+	}
+	mostKills := recordMostKills{id: []uint64{}}
+
 	for id, player := range m.Players {
 		if _, err := txExecInsertMatchPlayerStmt.Exec(mRes.ID, id, player.Name, player.Team, player.Reward, player.Kills, player.Deaths, player.Winner); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+			completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(completeErr)
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return CompletedMatch{}, err
+			return CompletedMatch{}, completeErr
 		}
 
 		if player.Reward > 0 {
 			if _, err := txExecIncreaseGemsStmt.Exec(id, player.Reward); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+				c.Error(completeErr)
 				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return CompletedMatch{}, err
+				return CompletedMatch{}, completeErr
 			}
 		}
 
 		for key, value := range player.Stats {
 			if _, err := txExecInsertMatchPlayerStatStmt.Exec(mRes.ID, id, key, value); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+				c.Error(completeErr)
 				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return CompletedMatch{}, err
+				return CompletedMatch{}, completeErr
 			}
 		}
 
 		for key, values := range player.ItemStats {
 			for item, value := range values {
 				if _, err := txExecInsertMatchPlayerItemStatStmt.Exec(mRes.ID, id, key, item, value); err != nil {
-					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+					completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+					c.Error(completeErr)
 					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+					return CompletedMatch{}, completeErr
+				}
+			}
+		}
+
+		if player.Kills >= 1 {
+			kills := uint32(player.Kills)
+
+			if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "kill_1", GameMode: "pvpa"}, &kills, false); err != nil {
+				return CompletedMatch{}, err
+			}
+
+			if kills >= 50 {
+				if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "kill_one_match_50", GameMode: "pvpa"}, &kills, false); err != nil {
 					return CompletedMatch{}, err
 				}
 			}
+
+			if kills >= 100 {
+				if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "kill_one_match_100", GameMode: "pvpa"}, &kills, false); err != nil {
+					return CompletedMatch{}, err
+				}
+			}
+
+			if kills == mostKills.count {
+				mostKills.id = append(mostKills.id, id)
+			} else if kills >= mostKills.count {
+				mostKills.id = []uint64{id}
+				mostKills.count = kills
+			}
+		}
+
+		if player.Winner {
+			var delta uint32 = 1
+			if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "win_1", GameMode: "pvpa"}, &delta, false); err != nil {
+				return CompletedMatch{}, err
+			}
+
+			if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "win_5", GameMode: "pvpa"}, &delta, false); err != nil {
+				return CompletedMatch{}, err
+			}
+
+			if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "win_25", GameMode: "pvpa"}, &delta, false); err != nil {
+				return CompletedMatch{}, err
+			}
+
+			if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "win_50", GameMode: "pvpa"}, &delta, false); err != nil {
+				return CompletedMatch{}, err
+			}
+		}
+	}
+
+	for _, id := range mostKills.id {
+		var delta uint32 = 1
+
+		if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "most_kills_in_match", GameMode: "pvpa"}, &delta, false); err != nil {
+			return CompletedMatch{}, err
 		}
 	}
 
 	for key, value := range m.Metrics {
 		if _, err := txExecInsertMatchMetricStmt.Exec(mRes.ID, key, value); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+			completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(completeErr)
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return CompletedMatch{}, err
+			return CompletedMatch{}, completeErr
 		}
 	}
 
@@ -409,17 +474,19 @@ func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialId
 			teamNumber := i + 1
 
 			if _, err := txExecInsertMatchAdventureTeam.Exec(mRes.ID, teamNumber, team.Points); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+				c.Error(completeErr)
 				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return CompletedMatch{}, err
+				return CompletedMatch{}, completeErr
 			}
 
 			for _, boss := range team.Bosses {
 				// TODO: implement first blood bosses here!
 				if _, err := txExecInsertMatchAdventureTeamBoss.Exec(mRes.ID, teamNumber, boss, false); err != nil {
-					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+					completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+					c.Error(completeErr)
 					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-					return CompletedMatch{}, err
+					return CompletedMatch{}, completeErr
 				}
 			}
 		}
@@ -553,7 +620,7 @@ func recordMatchHandler(c *gin.Context) {
 			return
 		}
 
-		mRes.ReplayUrl = ptr.String(finalReplayUrl)
+		mRes.ReplayUrl = &finalReplayUrl
 	}
 
 	if err := tx.Commit(); err != nil {

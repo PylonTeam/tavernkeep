@@ -135,6 +135,70 @@ func getAchievementsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, achievements)
 }
 
+func progressAchievement(c *gin.Context, tx *sql.Tx, id uint64, aRef AchievementRef, delta *uint32, external bool) (Achievement, error) {
+	if delta != nil && *delta == 0 {
+		abortStatusError(c, http.StatusBadRequest, ErrAchievementNoDeltaZero)
+		return Achievement{}, ErrAchievementNoDeltaZero
+	}
+
+	txQueryAchievementDefStmt := tx.Stmt(queryAchievementDefStmt)
+	defer txQueryAchievementDefStmt.Close()
+	txQueryAchievementStmt := tx.Stmt(queryAchievementStmt)
+	defer txQueryAchievementStmt.Close()
+	txExecAchievementProgressStmt := tx.Stmt(execAchievementProgressStmt)
+	defer txExecAchievementProgressStmt.Close()
+
+	a := Achievement{}
+	var noExtMut bool
+
+	if err := txQueryAchievementDefStmt.QueryRow(aRef.Name, aRef.GameMode).Scan(&a.Target, &a.Reward, &noExtMut); err == sql.ErrNoRows {
+		abortStatusError(c, http.StatusNotFound, ErrAchievementDoesNotExist)
+		return Achievement{}, ErrAchievementDoesNotExist
+	} else if err != nil {
+		completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(completeErr)
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return Achievement{}, completeErr
+	}
+
+	if noExtMut && external {
+		abortStatusError(c, http.StatusBadRequest, ErrAchievementNoExtMut)
+		return Achievement{}, ErrAchievementNoExtMut
+	}
+
+	var claimed *uint32
+	var claimed_at *int64
+	if err := txQueryAchievementStmt.QueryRow(aRef.Name, aRef.GameMode, id).Scan(&a.Progress, &claimed, &claimed_at); err != nil && err != sql.ErrNoRows {
+		completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(completeErr)
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return Achievement{}, completeErr
+	}
+
+	if claimed != nil || claimed_at != nil {
+		abortStatusError(c, http.StatusBadRequest, ErrAchievementAlreadyClaimed)
+		return Achievement{}, ErrAchievementAlreadyClaimed
+	}
+
+	initialProgress := a.Progress
+	if delta != nil {
+		a.Progress = min(a.Target, a.Progress+*delta)
+	} else {
+		a.Progress = a.Target
+	}
+
+	if a.Progress != initialProgress {
+		if _, err := txExecAchievementProgressStmt.Exec(aRef.Name, aRef.GameMode, id, a.Progress, a.Progress); err != nil {
+			completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(completeErr)
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			return Achievement{}, completeErr
+		}
+	}
+
+	return a, nil
+}
+
 func progressAchievementHandler(c *gin.Context) {
 	type requestBody struct {
 		ID          uint64         `json:"id,string" binding:"required"`
@@ -148,11 +212,6 @@ func progressAchievementHandler(c *gin.Context) {
 		return
 	}
 
-	if b.Delta != nil && *b.Delta == 0 {
-		abortStatusError(c, http.StatusBadRequest, ErrAchievementNoDeltaZero)
-		return
-	}
-
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
@@ -162,56 +221,9 @@ func progressAchievementHandler(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
-	txQueryAchievementDefStmt := tx.Stmt(queryAchievementDefStmt)
-	defer txQueryAchievementDefStmt.Close()
-	txQueryAchievementStmt := tx.Stmt(queryAchievementStmt)
-	defer txQueryAchievementStmt.Close()
-	txExecAchievementProgressStmt := tx.Stmt(execAchievementProgressStmt)
-	defer txExecAchievementProgressStmt.Close()
-
-	a := Achievement{}
-	var noExtMut bool
-
-	if err := txQueryAchievementDefStmt.QueryRow(b.Achievement.Name, b.Achievement.GameMode).Scan(&a.Target, &a.Reward, &noExtMut); err == sql.ErrNoRows {
-		abortStatusError(c, http.StatusNotFound, ErrAchievementDoesNotExist)
+	a, err := progressAchievement(c, tx, b.ID, b.Achievement, b.Delta, true)
+	if err != nil {
 		return
-	} else if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return
-	}
-
-	if noExtMut {
-		abortStatusError(c, http.StatusBadRequest, ErrAchievementNoExtMut)
-		return
-	}
-
-	var claimed *uint32
-	var claimed_at *int64
-	if err := txQueryAchievementStmt.QueryRow(b.Achievement.Name, b.Achievement.GameMode, b.ID).Scan(&a.Progress, &claimed, &claimed_at); err != nil && err != sql.ErrNoRows {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return
-	}
-
-	if claimed != nil || claimed_at != nil {
-		abortStatusError(c, http.StatusBadRequest, ErrAchievementAlreadyClaimed)
-		return
-	}
-
-	initialProgress := a.Progress
-	if b.Delta != nil {
-		a.Progress = min(a.Target, a.Progress+*b.Delta)
-	} else {
-		a.Progress = a.Target
-	}
-
-	if a.Progress != initialProgress {
-		if _, err = txExecAchievementProgressStmt.Exec(b.Achievement.Name, b.Achievement.GameMode, b.ID, a.Progress, a.Progress); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return
-		}
 	}
 
 	if err := tx.Commit(); err != nil {
