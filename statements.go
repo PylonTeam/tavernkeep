@@ -146,6 +146,11 @@ CREATE INDEX IF NOT EXISTS idx_accolade_owner ON accolade(owner);
 
 CREATE INDEX IF NOT EXISTS idx_achievement_def_game_mode ON achievement_def(game_mode);
 CREATE INDEX IF NOT EXISTS idx_achievement_game_mode_id ON achievement(game_mode, id);
+
+CREATE INDEX IF NOT EXISTS idx_match_game_mode ON match(game_mode);
+CREATE INDEX IF NOT EXISTS idx_match_player_player ON match_player(id, match_id);
+CREATE INDEX IF NOT EXISTS idx_match_player_stat_player ON match_player_stat(id, match_id, key);
+CREATE INDEX IF NOT EXISTS idx_match_player_item_stat_player ON match_player_item_stat(id, match_id, key, item);
 `
 
 var (
