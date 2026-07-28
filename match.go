@@ -83,6 +83,183 @@ type CompletedMatch struct {
 	Match
 }
 
+func scanMatch(rows *sql.Rows, m *CompletedMatch) error {
+	var start, end, recorded int64
+
+	if err := rows.Scan(&m.ID, &start, &end, &m.GameMode, &recorded, &m.ReplayUrl, &m.OfficialIdentity); err != nil {
+		return err
+	}
+
+	m.Start = time.Unix(start, 0)
+	m.End = time.Unix(end, 0)
+	m.Recorded = time.Unix(recorded, 0)
+	return nil
+}
+
+func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPlayerStatsStmt *sql.Stmt, txQueryMatchPlayerItemStatsStmt *sql.Stmt, txQueryMatchAdventureTeam *sql.Stmt, txQueryMatchAdventureTeamBoss *sql.Stmt, m *CompletedMatch) error {
+	rows, err := txQueryMatchPlayerStmt.Query(m.ID)
+	if err != nil {
+		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return err
+	}
+	defer rows.Close()
+
+	m.Players = map[uint64]Player{}
+	for rows.Next() {
+		var id uint64
+		var player Player
+
+		if err := rows.Scan(&id, &player.Name, &player.Team, &player.Reward, &player.Kills, &player.Deaths, &player.Winner); err != nil {
+			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			return err
+		}
+
+		player.Stats = map[string]uint32{}
+		{
+			rows, err := txQueryMatchPlayerStatsStmt.Query(m.ID, id)
+			if err != nil {
+				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				return err
+			}
+			defer rows.Close()
+
+			for rows.Next() {
+				var key string
+				var value uint32
+				if err := rows.Scan(&key, &value); err != nil {
+					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+					return err
+				}
+
+				player.Stats[key] = value
+			}
+
+			if err := rows.Err(); err != nil {
+				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				return err
+			}
+
+			m.Players[id] = player
+		}
+
+		player.ItemStats = map[string]map[int32]uint32{}
+		{
+			rows, err := txQueryMatchPlayerItemStatsStmt.Query(m.ID, id)
+			if err != nil {
+				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				return err
+			}
+			defer rows.Close()
+
+			for rows.Next() {
+				var key string
+				var item int32
+				var value uint32
+				if err := rows.Scan(&key, &item, &value); err != nil {
+					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+					return err
+				}
+
+				if vals, hasVals := player.ItemStats[key]; hasVals {
+					// FIXME: is any of this needed?
+					vals[item] = value
+					player.ItemStats[key] = vals
+				} else {
+					player.ItemStats[key] = map[int32]uint32{item: value}
+				}
+			}
+
+			if err := rows.Err(); err != nil {
+				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				return err
+			}
+
+			m.Players[id] = player
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return err
+	}
+
+	if m.GameMode == "pvpa" {
+		rows, err = txQueryMatchAdventureTeam.Query(m.ID)
+		if err != nil {
+			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var teamNumber, points int
+
+			if err := rows.Scan(&teamNumber, &points); err != nil {
+				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				return err
+			}
+
+			// first iteration will have the largest index, because this is in descending order,
+			// so use that to initialize our length.
+			if m.Teams == nil {
+				m.Teams = make([]*Team, teamNumber+1)
+			}
+
+			team := new(Team)
+			team.Points = points
+			team.Bosses = []int{}
+			m.Teams[teamNumber] = team
+		}
+
+		if err := rows.Err(); err != nil {
+			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			return err
+		}
+
+		rows, err = txQueryMatchAdventureTeamBoss.Query(m.ID)
+		if err != nil {
+			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			return err
+		}
+
+		defer rows.Close()
+		for rows.Next() {
+			var teamNumber, id int
+			// TODO: Make use of first blood for bosses
+			var firstBlood bool
+
+			if err := rows.Scan(&teamNumber, &id, &firstBlood); err != nil {
+				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				return err
+			}
+
+			m.Teams[teamNumber].Bosses = append(m.Teams[teamNumber].Bosses, id)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		return err
+	}
+
+	return nil
+}
+
 func getMatchHandler(c *gin.Context) {
 	if version := c.GetUint32("version"); version != 1 {
 		abortStatusError(c, http.StatusBadRequest, ErrVersion)
@@ -90,7 +267,8 @@ func getMatchHandler(c *gin.Context) {
 	}
 
 	type requestQuery struct {
-		ID uint64 `form:"id" binding:"required"`
+		ID       *uint64 `form:"id"`
+		GameMode *string `form:"gameMode"`
 	}
 	var query requestQuery
 
@@ -99,7 +277,6 @@ func getMatchHandler(c *gin.Context) {
 		return
 	}
 
-	var matches = []CompletedMatch{}
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
@@ -109,219 +286,109 @@ func getMatchHandler(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
-	// FIXME: MORE CONTEXT!!
-	txQueryMatchesStmt := tx.Stmt(queryMatchesStmt)
-	defer txQueryMatchesStmt.Close()
-
-	// query all match ids that this player has been involved in.
-	rows, err := txQueryMatchesStmt.Query(query.ID)
-	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return
-	}
-	defer rows.Close()
-
 	txQueryMatchStmt := tx.Stmt(queryMatchStmt)
 	defer txQueryMatchStmt.Close()
 	txQueryMatchPlayerStmt := tx.Stmt(queryMatchPlayerStmt)
 	defer txQueryMatchPlayerStmt.Close()
 	txQueryMatchPlayerStatsStmt := tx.Stmt(queryMatchPlayerStatsStmt)
-	defer txQueryMatchPlayerStmt.Close()
+	defer txQueryMatchPlayerStatsStmt.Close()
 	txQueryMatchPlayerItemStatsStmt := tx.Stmt(queryMatchPlayerItemStatsStmt)
-	defer txQueryMatchPlayerStmt.Close()
+	defer txQueryMatchPlayerItemStatsStmt.Close()
+	txQueryMatchAdventureTeam := tx.Stmt(queryMatchAdventureTeam)
+	defer txQueryMatchAdventureTeam.Close()
+	txQueryMatchAdventureTeamBoss := tx.Stmt(queryMatchAdventureTeamBoss)
+	defer txQueryMatchAdventureTeamBoss.Close()
 
-	for rows.Next() {
-		var m CompletedMatch
-		if err := rows.Scan(&m.ID); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return
-		}
+	var matches = []CompletedMatch{}
+	if query.ID != nil {
+		// FIXME: MORE CONTEXT!!
+		txQueryMatchesStmt := tx.Stmt(queryMatchesStmt)
+		defer txQueryMatchesStmt.Close()
 
-		var start, end, recorded int64
-		if err := txQueryMatchStmt.QueryRow(m.ID).Scan(&start, &end, &m.GameMode, &recorded, &m.ReplayUrl, &m.OfficialIdentity); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return
-		}
-
-		m.Start = time.Unix(start, 0)
-		m.End = time.Unix(end, 0)
-		m.Recorded = time.Unix(recorded, 0)
-
-		rows, err := txQueryMatchPlayerStmt.Query(m.ID)
+		// query all match ids that this player has been involved in.
+		rows, err := txQueryMatchesStmt.Query(query.ID)
 		if err != nil {
 			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
-		defer rows.Close()
 
-		m.Players = map[uint64]Player{}
 		for rows.Next() {
-			var id uint64
-			var player Player
-
-			if err := rows.Scan(&id, &player.Name, &player.Team, &player.Reward, &player.Kills, &player.Deaths, &player.Winner); err != nil {
+			var m CompletedMatch
+			if err = rows.Scan(&m.ID); err != nil {
 				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 				return
 			}
 
-			player.Stats = map[string]uint32{}
-			{
-				rows, err := txQueryMatchPlayerStatsStmt.Query(m.ID, id)
-				if err != nil {
-					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-					return
-				}
-				defer rows.Close()
-
-				for rows.Next() {
-					var key string
-					var value uint32
-					if err := rows.Scan(&key, &value); err != nil {
-						c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-						abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-						return
-					}
-
-					player.Stats[key] = value
-				}
-
-				if err := rows.Err(); err != nil {
-					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-					return
-				}
-
-				m.Players[id] = player
-			}
-
-			player.ItemStats = map[string]map[int32]uint32{}
-			{
-				rows, err := txQueryMatchPlayerItemStatsStmt.Query(m.ID, id)
-				if err != nil {
-					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-					return
-				}
-				defer rows.Close()
-
-				for rows.Next() {
-					var key string
-					var item int32
-					var value uint32
-					if err := rows.Scan(&key, &item, &value); err != nil {
-						c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-						abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-						return
-					}
-
-					if vals, hasVals := player.ItemStats[key]; hasVals {
-						// FIXME: is any of this needed?
-						vals[item] = value
-						player.ItemStats[key] = vals
-					} else {
-						player.ItemStats[key] = map[int32]uint32{item: value}
-					}
-				}
-
-				if err := rows.Err(); err != nil {
-					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-					return
-				}
-
-				m.Players[id] = player
-			}
-		}
-
-		if err := rows.Err(); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return
-		}
-
-		if m.GameMode == "pvpa" {
-			txQueryMatchAdventureTeam := tx.Stmt(queryMatchAdventureTeam)
-			defer txQueryMatchAdventureTeam.Close()
-			txQueryMatchAdventureTeamBoss := tx.Stmt(queryMatchAdventureTeamBoss)
-			defer txQueryMatchAdventureTeamBoss.Close()
-
-			rows, err = txQueryMatchAdventureTeam.Query(m.ID)
-			if err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return
-			}
-			defer rows.Close()
-
-			for rows.Next() {
-				var teamNumber, points int
-
-				if err := rows.Scan(&teamNumber, &points); err != nil {
-					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-					return
-				}
-
-				// first iteration will have the largest index, because this is in descending order,
-				// so use that to initialize our length.
-				if m.Teams == nil {
-					m.Teams = make([]*Team, teamNumber+1)
-				}
-
-				team := new(Team)
-				team.Points = points
-				team.Bosses = []int{}
-				m.Teams[teamNumber] = team
-			}
-
-			if err := rows.Err(); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return
-			}
-
-			rows, err = txQueryMatchAdventureTeamBoss.Query(m.ID)
+			rows, err = txQueryMatchStmt.Query(m.ID, query.GameMode)
 			if err != nil {
 				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 				return
 			}
 
-			defer rows.Close()
-			for rows.Next() {
-				var teamNumber, id int
-				// TODO: Make use of first blood for bosses
-				var firstBlood bool
-
-				if err := rows.Scan(&teamNumber, &id, &firstBlood); err != nil {
+			if !rows.Next() {
+				if err = rows.Err(); err != nil {
 					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 					return
 				}
 
-				m.Teams[teamNumber].Bosses = append(m.Teams[teamNumber].Bosses, id)
+				continue
 			}
+
+			if err = scanMatch(rows, &m); err != nil {
+				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				return
+			}
+
+			if err = queryMatch(c, txQueryMatchPlayerStmt, txQueryMatchPlayerStatsStmt, txQueryMatchPlayerItemStatsStmt, txQueryMatchAdventureTeam, txQueryMatchAdventureTeamBoss, &m); err != nil {
+				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				return
+			}
+
+			matches = append(matches, m)
 		}
 
-		if err := rows.Err(); err != nil {
+		if err = rows.Err(); err != nil {
+			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			return
+		}
+	} else {
+		rows, err := txQueryMatchStmt.Query(nil, query.GameMode)
+		if err != nil {
 			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
 		}
 
-		matches = append(matches, m)
-	}
+		for rows.Next() {
+			var m CompletedMatch
 
-	if err := rows.Err(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return
+			if err = scanMatch(rows, &m); err != nil {
+				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				return
+			}
+
+			if err = queryMatch(c, txQueryMatchPlayerStmt, txQueryMatchPlayerStatsStmt, txQueryMatchPlayerItemStatsStmt, txQueryMatchAdventureTeam, txQueryMatchAdventureTeamBoss, &m); err != nil {
+				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				return
+			}
+
+			matches = append(matches, m)
+		}
+
+		if err = rows.Err(); err != nil {
+			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
+			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, matches)

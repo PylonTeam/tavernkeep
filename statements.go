@@ -250,7 +250,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if queryMatchStmt, err = db.Prepare("SELECT start, end, game_mode, recorded, replay_url, official_identity_subject FROM match WHERE id = ?"); err != nil {
+	if queryMatchStmt, err = db.Prepare("SELECT id, start, end, game_mode, recorded, replay_url, official_identity_subject FROM match WHERE (id = ?1 OR ?1 IS NULL) AND (game_mode = ?2 OR ?2 IS NULL)"); err != nil {
 		return err
 	}
 
