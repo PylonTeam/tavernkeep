@@ -67,7 +67,7 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 		if m.Teams[0] != nil {
 			return fmt.Errorf("%w: team None must be null", ErrMalformedMatch)
 		}
-	} else if m.GameMode != "ctg" {
+	} else if m.GameMode != "ctg" && m.GameMode != "arenas" {
 		return fmt.Errorf("%w: %w: %s", ErrMalformedMatch, ErrUnsupportedGameMode, m.GameMode)
 	}
 
@@ -650,6 +650,8 @@ func recordMatchHandler(c *gin.Context) {
 			fileGameMode = "TPVPA"
 		case "ctg":
 			fileGameMode = "CTG"
+		case "arenas":
+			fileGameMode = "Arenas"
 		default:
 			c.Error(fmt.Errorf("%w: using provided game mode for replay file name (%s)", ErrUnsupportedGameMode, mRes.GameMode))
 			fileGameMode = mRes.GameMode
