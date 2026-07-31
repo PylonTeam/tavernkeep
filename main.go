@@ -13,7 +13,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/getsentry/sentry-go"
 	"github.com/gin-gonic/gin"
+
+	sentrygin "github.com/getsentry/sentry-go/gin"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -101,11 +104,15 @@ func getAccoladesHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, accolades)
 }
 
-func errorHandler(c *gin.Context) {
+func reportErrorsToSentry(c *gin.Context) {
 	c.Next()
 
 	if len(c.Errors) > 0 {
-		log.Println("errors encountered during request handling:", strings.Join(c.Errors.Errors(), ","))
+		if hub := sentrygin.GetHubFromContext(c); hub != nil {
+			for _, err := range c.Errors {
+				hub.CaptureException(err)
+			}
+		}
 	}
 }
 
@@ -194,9 +201,20 @@ func main() {
 	}
 	defer closeStatements()
 
+	if dsn, hasDsn := os.LookupEnv("TAVERNKEEP_SENTRY_DSN"); hasDsn {
+		if err := sentry.Init(sentry.ClientOptions{
+			Dsn: dsn,
+		}); err != nil {
+			log.Fatalln(fmt.Errorf("failed to initialize sentry: %w", err))
+		}
+	}
+
 	r := gin.Default()
 
 	r.SetTrustedProxies([]string{"127.0.0.1"})
+
+	r.Use(sentrygin.New(sentrygin.Options{}))
+	r.Use(reportErrorsToSentry)
 
 	r.GET("/shop/:v", requireVersionHandler, listProductsHandler)
 	r.POST("/shop/purchase/:v", requireVersionHandler, requireContentTypeJson, steamAuthTicketHandler, purchaseProductHandler)
