@@ -39,9 +39,9 @@ func steamAuthTicketHandler(c *gin.Context) {
 
 	res, err := http.Get(authUserTicketUrl.String())
 	if err != nil {
-		abortErr := fmt.Errorf("%w: unable to make authentication request to Steam", ErrNoSteamAuth)
-		c.Error(fmt.Errorf("%w: %w", abortErr, err))
-		abortStatusError(c, http.StatusServiceUnavailable, abortErr)
+		err = fmt.Errorf("%w: failed to make authentication request to Steam: %w", ErrNoSteamAuth, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusServiceUnavailable, err)
 		return
 	}
 	defer res.Body.Close()
@@ -69,9 +69,9 @@ func steamAuthTicketHandler(c *gin.Context) {
 
 	authUserTicketRes := authResBody{}
 	if err := json.NewDecoder(res.Body).Decode(&authUserTicketRes); err != nil {
-		abortErr := fmt.Errorf("%w: unable to JSON decode Steam response: %w", ErrNoSteamAuth, err)
-		c.Error(abortErr)
-		abortStatusError(c, http.StatusServiceUnavailable, abortErr)
+		err = fmt.Errorf("%w: unable to JSON decode Steam response: %w", ErrNoSteamAuth, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusServiceUnavailable, err)
 		return
 	}
 

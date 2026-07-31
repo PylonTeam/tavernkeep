@@ -540,7 +540,6 @@ func recordMatchHandler(c *gin.Context) {
 
 		if err := c.ShouldBind(&m); err != nil {
 			err = fmt.Errorf("%w: %w: %w", ErrMalformedMatch, ErrMalformedBody, err)
-			c.Error(err)
 			abortStatusError(c, http.StatusBadRequest, err)
 			return
 		}
@@ -557,14 +556,12 @@ func recordMatchHandler(c *gin.Context) {
 		var body requestBody
 		if err := c.ShouldBind(&body); err != nil {
 			err = fmt.Errorf("%w: %w", ErrMalformedBody, err)
-			c.Error(err)
 			abortStatusError(c, http.StatusBadRequest, err)
 			return
 		}
 
 		if err := json.Unmarshal([]byte(body.Payload), &m); err != nil {
 			err = fmt.Errorf("%w: %w: %w", ErrMalformedMatch, ErrMalformedBody, err)
-			c.Error(err)
 			abortStatusError(c, http.StatusBadRequest, err)
 			return
 		}
@@ -573,7 +570,6 @@ func recordMatchHandler(c *gin.Context) {
 		// binding not marked as required, check it here (you should always be submitting a replay from here)
 		if replayHeader == nil {
 			err := fmt.Errorf("%w: must include replay", ErrMalformedBody)
-			c.Error(err)
 			abortStatusError(c, http.StatusBadRequest, err)
 			return
 		}
