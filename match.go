@@ -433,19 +433,21 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 		if player.Kills >= 1 {
 			kills := uint32(player.Kills)
 
-			if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_1", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-				return CompletedMatch{}, err
-			}
-
-			if kills >= 50 {
-				if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_one_match_50", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+			if m.GameMode == "pvpa" {
+				if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_1", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 					return CompletedMatch{}, err
 				}
-			}
 
-			if kills >= 100 {
-				if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_one_match_100", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-					return CompletedMatch{}, err
+				if kills >= 50 {
+					if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_one_match_50", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+						return CompletedMatch{}, err
+					}
+				}
+
+				if kills >= 100 {
+					if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_one_match_100", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+						return CompletedMatch{}, err
+					}
 				}
 			}
 
@@ -457,7 +459,7 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 			}
 		}
 
-		if player.Winner {
+		if player.Winner && m.GameMode == "pvpa" {
 			var delta uint32 = 1
 			if _, err := progressAchievement(tx, id, AchievementRef{Name: "win_1", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 				return CompletedMatch{}, err
@@ -480,8 +482,10 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 	for _, id := range mostKills.id {
 		var delta uint32 = 1
 
-		if _, err := progressAchievement(tx, id, AchievementRef{Name: "most_kills_in_match", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-			return CompletedMatch{}, err
+		if m.GameMode == "pvpa" {
+			if _, err := progressAchievement(tx, id, AchievementRef{Name: "most_kills_in_match", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+				return CompletedMatch{}, err
+			}
 		}
 	}
 
