@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -45,8 +46,9 @@ func getAchievementsHandler(c *gin.Context) {
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer tx.Rollback()
@@ -58,8 +60,9 @@ func getAchievementsHandler(c *gin.Context) {
 
 	rows, err := txQueryAchievementDefsStmt.Query(query.GameMode)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer rows.Close()
@@ -70,8 +73,9 @@ func getAchievementsHandler(c *gin.Context) {
 		a := Achievement{}
 
 		if err := rows.Scan(&name, &a.Target, &a.Reward); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -79,15 +83,17 @@ func getAchievementsHandler(c *gin.Context) {
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
 	rows, err = txQueryAchievementsStmt.Query(query.GameMode, id)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer rows.Close()
@@ -99,8 +105,9 @@ func getAchievementsHandler(c *gin.Context) {
 		var claimed_at *int64
 
 		if err := rows.Scan(&name, &progress, &claimed, &claimed_at); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -121,23 +128,24 @@ func getAchievementsHandler(c *gin.Context) {
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, achievements)
 }
 
-func progressAchievement(c *gin.Context, tx *sql.Tx, id uint64, aRef AchievementRef, delta *uint32, external bool) (Achievement, error) {
+func progressAchievement(tx *sql.Tx, id uint64, aRef AchievementRef, delta *uint32, external bool) (Achievement, error) {
 	if delta != nil && *delta == 0 {
-		abortStatusError(c, http.StatusBadRequest, ErrAchievementNoDeltaZero)
 		return Achievement{}, ErrAchievementNoDeltaZero
 	}
 
@@ -152,31 +160,22 @@ func progressAchievement(c *gin.Context, tx *sql.Tx, id uint64, aRef Achievement
 	var noExtMut bool
 
 	if err := txQueryAchievementDefStmt.QueryRow(aRef.Name, aRef.GameMode).Scan(&a.Target, &a.Reward, &noExtMut); err == sql.ErrNoRows {
-		abortStatusError(c, http.StatusNotFound, ErrAchievementDoesNotExist)
 		return Achievement{}, ErrAchievementDoesNotExist
 	} else if err != nil {
-		completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-		c.Error(completeErr)
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return Achievement{}, completeErr
+		return Achievement{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
 	if noExtMut && external {
-		abortStatusError(c, http.StatusBadRequest, ErrAchievementNoExtMut)
 		return Achievement{}, ErrAchievementNoExtMut
 	}
 
 	var claimed *uint32
 	var claimed_at *int64
 	if err := txQueryAchievementStmt.QueryRow(aRef.Name, aRef.GameMode, id).Scan(&a.Progress, &claimed, &claimed_at); err != nil && err != sql.ErrNoRows {
-		completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-		c.Error(completeErr)
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return Achievement{}, completeErr
+		return Achievement{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
 	if claimed != nil || claimed_at != nil {
-		abortStatusError(c, http.StatusBadRequest, ErrAchievementAlreadyClaimed)
 		return Achievement{}, ErrAchievementAlreadyClaimed
 	}
 
@@ -189,10 +188,7 @@ func progressAchievement(c *gin.Context, tx *sql.Tx, id uint64, aRef Achievement
 
 	if a.Progress != initialProgress {
 		if _, err := txExecAchievementProgressStmt.Exec(aRef.Name, aRef.GameMode, id, a.Progress, a.Progress); err != nil {
-			completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-			c.Error(completeErr)
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return Achievement{}, completeErr
+			return Achievement{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 	}
 
@@ -215,20 +211,34 @@ func progressAchievementHandler(c *gin.Context) {
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer tx.Rollback()
 
-	a, err := progressAchievement(c, tx, b.ID, b.Achievement, b.Delta, true)
+	a, err := progressAchievement(tx, b.ID, b.Achievement, b.Delta, true)
 	if err != nil {
+		var httpCode int
+
+		if errors.Is(err, ErrAchievementDoesNotExist) {
+			httpCode = http.StatusNotFound
+		} else if errors.Is(err, ErrAchievementNoDeltaZero) || errors.Is(err, ErrAchievementNoExtMut) || errors.Is(err, ErrAchievementAlreadyClaimed) {
+			httpCode = http.StatusBadRequest
+		} else {
+			httpCode = http.StatusInternalServerError
+			c.Error(err)
+		}
+
+		abortStatusError(c, httpCode, err)
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -254,8 +264,9 @@ func claimAchievementHandler(c *gin.Context) {
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer tx.Rollback()
@@ -274,8 +285,9 @@ func claimAchievementHandler(c *gin.Context) {
 		abortStatusError(c, http.StatusNotFound, ErrAchievementDoesNotExist)
 		return
 	} else if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -284,8 +296,9 @@ func claimAchievementHandler(c *gin.Context) {
 		c.Status(http.StatusBadRequest)
 		return
 	} else if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	a.ClaimedAt = new(time.Time)
@@ -293,15 +306,17 @@ func claimAchievementHandler(c *gin.Context) {
 
 	if a.Reward > 0 {
 		if _, err = txExecIncreaseGemsStmt.Exec(id, a.Reward); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 

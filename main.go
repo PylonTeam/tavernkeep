@@ -70,8 +70,9 @@ func getAccoladesHandler(c *gin.Context) {
 
 	rows, err := queryAccoladesStmt.Query()
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer rows.Close()
@@ -81,8 +82,9 @@ func getAccoladesHandler(c *gin.Context) {
 		var name, owner string
 
 		if err := rows.Scan(&name, &owner); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -90,8 +92,9 @@ func getAccoladesHandler(c *gin.Context) {
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 

@@ -42,8 +42,9 @@ func listProductsHandler(c *gin.Context) {
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer tx.Rollback()
@@ -53,8 +54,9 @@ func listProductsHandler(c *gin.Context) {
 
 	rows, err := txQueryProductsStmt.Query()
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer rows.Close()
@@ -65,8 +67,9 @@ func listProductsHandler(c *gin.Context) {
 		var achieveGameMode, achieveName *string
 
 		if err := rows.Scan(&product.Prototype, &product.Name, &product.Price, &product.Accolade, &achieveGameMode, &achieveName); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -81,14 +84,16 @@ func listProductsHandler(c *gin.Context) {
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -121,8 +126,9 @@ func purchaseProductHandler(c *gin.Context) {
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer tx.Rollback()
@@ -140,8 +146,9 @@ func purchaseProductHandler(c *gin.Context) {
 	var count int
 	err = txQueryInventoryItemCountStmt.QueryRow(item.Prototype, item.Name, id).Scan(&count)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -157,8 +164,9 @@ func purchaseProductHandler(c *gin.Context) {
 		abortStatusError(c, http.StatusNotFound, ErrProductDoesNotExist)
 		return
 	} else if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -168,8 +176,9 @@ func purchaseProductHandler(c *gin.Context) {
 
 		var count int
 		if err = txQueryAccoladeStmt.QueryRow(*accolade, id).Scan(&count); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -185,8 +194,9 @@ func purchaseProductHandler(c *gin.Context) {
 
 		var count int
 		if err = txQueryAchievementClaimedStmt.QueryRow(achieve_name, achieve_game_mode, id).Scan(&count); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -199,15 +209,17 @@ func purchaseProductHandler(c *gin.Context) {
 	if *item.PurchasePrice > 0 {
 		result, err := txExecReduceGemsStmt.Exec(item.PurchasePrice, item.PurchasePrice, id)
 		if err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
 		affected, err := result.RowsAffected()
 		if err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: cannot get rows affected: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -219,16 +231,18 @@ func purchaseProductHandler(c *gin.Context) {
 
 	var issued int64
 	if err := txExecInsertItemStmt.QueryRow(item.Prototype, item.Name, id, item.PurchasePrice, accolade).Scan(&issued); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
 	item.Issued = time.Unix(issued, 0)
 
 	if err := tx.Commit(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 

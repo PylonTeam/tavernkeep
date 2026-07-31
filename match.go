@@ -87,7 +87,7 @@ func scanMatch(rows *sql.Rows, m *CompletedMatch) error {
 	var start, end, recorded int64
 
 	if err := rows.Scan(&m.ID, &start, &end, &m.GameMode, &recorded, &m.ReplayUrl, &m.OfficialIdentity); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
 	m.Start = time.Unix(start, 0)
@@ -96,12 +96,10 @@ func scanMatch(rows *sql.Rows, m *CompletedMatch) error {
 	return nil
 }
 
-func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPlayerStatsStmt *sql.Stmt, txQueryMatchPlayerItemStatsStmt *sql.Stmt, txQueryMatchAdventureTeam *sql.Stmt, txQueryMatchAdventureTeamBoss *sql.Stmt, m *CompletedMatch) error {
+func queryMatch(txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPlayerStatsStmt *sql.Stmt, txQueryMatchPlayerItemStatsStmt *sql.Stmt, txQueryMatchAdventureTeam *sql.Stmt, txQueryMatchAdventureTeamBoss *sql.Stmt, m *CompletedMatch) error {
 	rows, err := txQueryMatchPlayerStmt.Query(m.ID)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return err
+		return fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 	defer rows.Close()
 
@@ -111,18 +109,14 @@ func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPl
 		var player Player
 
 		if err := rows.Scan(&id, &player.Name, &player.Team, &player.Reward, &player.Kills, &player.Deaths, &player.Winner); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return err
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 
 		player.Stats = map[string]uint32{}
 		{
 			rows, err := txQueryMatchPlayerStatsStmt.Query(m.ID, id)
 			if err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return err
+				return fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 			defer rows.Close()
 
@@ -130,18 +124,14 @@ func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPl
 				var key string
 				var value uint32
 				if err := rows.Scan(&key, &value); err != nil {
-					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-					return err
+					return fmt.Errorf("%w: %w", ErrDatabase, err)
 				}
 
 				player.Stats[key] = value
 			}
 
 			if err := rows.Err(); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return err
+				return fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 
 			m.Players[id] = player
@@ -151,9 +141,7 @@ func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPl
 		{
 			rows, err := txQueryMatchPlayerItemStatsStmt.Query(m.ID, id)
 			if err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return err
+				return fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 			defer rows.Close()
 
@@ -162,9 +150,7 @@ func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPl
 				var item int32
 				var value uint32
 				if err := rows.Scan(&key, &item, &value); err != nil {
-					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-					return err
+					return fmt.Errorf("%w: %w", ErrDatabase, err)
 				}
 
 				if vals, hasVals := player.ItemStats[key]; hasVals {
@@ -177,9 +163,7 @@ func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPl
 			}
 
 			if err := rows.Err(); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return err
+				return fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 
 			m.Players[id] = player
@@ -187,17 +171,13 @@ func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPl
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return err
+		return fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
 	if m.GameMode == "pvpa" {
 		rows, err = txQueryMatchAdventureTeam.Query(m.ID)
 		if err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return err
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 		defer rows.Close()
 
@@ -205,9 +185,7 @@ func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPl
 			var teamNumber, points int
 
 			if err := rows.Scan(&teamNumber, &points); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return err
+				return fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 
 			// first iteration will have the largest index, because this is in descending order,
@@ -223,16 +201,14 @@ func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPl
 		}
 
 		if err := rows.Err(); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return err
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
+
 		}
 
 		rows, err = txQueryMatchAdventureTeamBoss.Query(m.ID)
 		if err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return err
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
+
 		}
 
 		defer rows.Close()
@@ -242,9 +218,7 @@ func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPl
 			var firstBlood bool
 
 			if err := rows.Scan(&teamNumber, &id, &firstBlood); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return err
+				return fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 
 			m.Teams[teamNumber].Bosses = append(m.Teams[teamNumber].Bosses, id)
@@ -252,9 +226,8 @@ func queryMatch(c *gin.Context, txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPl
 	}
 
 	if err := rows.Err(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return err
+		return fmt.Errorf("%w: %w", ErrDatabase, err)
+
 	}
 
 	return nil
@@ -280,8 +253,9 @@ func getMatchHandler(c *gin.Context) {
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 	defer tx.Rollback()
@@ -308,30 +282,34 @@ func getMatchHandler(c *gin.Context) {
 		// query all match ids that this player has been involved in.
 		rows, err := txQueryMatchesStmt.Query(query.ID)
 		if err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
 		for rows.Next() {
 			var m CompletedMatch
 			if err = rows.Scan(&m.ID); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				err = fmt.Errorf("%w: %w", ErrDatabase, err)
+				c.Error(err)
+				abortStatusError(c, http.StatusInternalServerError, err)
 				return
 			}
 
 			rows, err = txQueryMatchStmt.Query(m.ID, query.GameMode)
 			if err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				err = fmt.Errorf("%w: %w", ErrDatabase, err)
+				c.Error(err)
+				abortStatusError(c, http.StatusInternalServerError, err)
 				return
 			}
 
 			if !rows.Next() {
 				if err = rows.Err(); err != nil {
-					c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+					err = fmt.Errorf("%w: %w", ErrDatabase, err)
+					c.Error(err)
+					abortStatusError(c, http.StatusInternalServerError, err)
 					return
 				}
 
@@ -339,14 +317,14 @@ func getMatchHandler(c *gin.Context) {
 			}
 
 			if err = scanMatch(rows, &m); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				c.Error(err)
+				abortStatusError(c, http.StatusInternalServerError, err)
 				return
 			}
 
-			if err = queryMatch(c, txQueryMatchPlayerStmt, txQueryMatchPlayerStatsStmt, txQueryMatchPlayerItemStatsStmt, txQueryMatchAdventureTeam, txQueryMatchAdventureTeamBoss, &m); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			if err = queryMatch(txQueryMatchPlayerStmt, txQueryMatchPlayerStatsStmt, txQueryMatchPlayerItemStatsStmt, txQueryMatchAdventureTeam, txQueryMatchAdventureTeamBoss, &m); err != nil {
+				c.Error(err)
+				abortStatusError(c, http.StatusInternalServerError, err)
 				return
 			}
 
@@ -354,15 +332,17 @@ func getMatchHandler(c *gin.Context) {
 		}
 
 		if err = rows.Err(); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 	} else {
 		rows, err := txQueryMatchStmt.Query(nil, query.GameMode)
 		if err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -370,14 +350,14 @@ func getMatchHandler(c *gin.Context) {
 			var m CompletedMatch
 
 			if err = scanMatch(rows, &m); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+				c.Error(err)
+				abortStatusError(c, http.StatusInternalServerError, err)
 				return
 			}
 
-			if err = queryMatch(c, txQueryMatchPlayerStmt, txQueryMatchPlayerStatsStmt, txQueryMatchPlayerItemStatsStmt, txQueryMatchAdventureTeam, txQueryMatchAdventureTeamBoss, &m); err != nil {
-				c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			if err = queryMatch(txQueryMatchPlayerStmt, txQueryMatchPlayerStatsStmt, txQueryMatchPlayerItemStatsStmt, txQueryMatchAdventureTeam, txQueryMatchAdventureTeamBoss, &m); err != nil {
+				c.Error(err)
+				abortStatusError(c, http.StatusInternalServerError, err)
 				return
 			}
 
@@ -385,8 +365,9 @@ func getMatchHandler(c *gin.Context) {
 		}
 
 		if err = rows.Err(); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 	}
@@ -394,7 +375,7 @@ func getMatchHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, matches)
 }
 
-func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialIdentity) (CompletedMatch, error) {
+func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (CompletedMatch, error) {
 	mRes := CompletedMatch{Match: m, OfficialIdentity: official.Subject}
 
 	// FIXME: MORE CONTEXT!!
@@ -413,10 +394,7 @@ func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialId
 
 	var recorded int64
 	if err := txExecInsertMatchStmt.QueryRow(m.Start.Unix(), m.End.Unix(), m.GameMode, official.Subject, official.Fingerprint).Scan(&mRes.ID, &recorded); err != nil {
-		completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-		c.Error(completeErr)
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-		return CompletedMatch{}, completeErr
+		return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
 	mRes.Recorded = time.Unix(recorded, 0)
@@ -429,37 +407,25 @@ func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialId
 
 	for id, player := range m.Players {
 		if _, err := txExecInsertMatchPlayerStmt.Exec(mRes.ID, id, player.Name, player.Team, player.Reward, player.Kills, player.Deaths, player.Winner); err != nil {
-			completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-			c.Error(completeErr)
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return CompletedMatch{}, completeErr
+			return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 
 		if player.Reward > 0 {
 			if _, err := txExecIncreaseGemsStmt.Exec(id, player.Reward); err != nil {
-				completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-				c.Error(completeErr)
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return CompletedMatch{}, completeErr
+				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 		}
 
 		for key, value := range player.Stats {
 			if _, err := txExecInsertMatchPlayerStatStmt.Exec(mRes.ID, id, key, value); err != nil {
-				completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-				c.Error(completeErr)
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return CompletedMatch{}, completeErr
+				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 		}
 
 		for key, values := range player.ItemStats {
 			for item, value := range values {
 				if _, err := txExecInsertMatchPlayerItemStatStmt.Exec(mRes.ID, id, key, item, value); err != nil {
-					completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-					c.Error(completeErr)
-					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-					return CompletedMatch{}, completeErr
+					return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 				}
 			}
 		}
@@ -467,18 +433,18 @@ func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialId
 		if player.Kills >= 1 {
 			kills := uint32(player.Kills)
 
-			if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "kill_1", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+			if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_1", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 				return CompletedMatch{}, err
 			}
 
 			if kills >= 50 {
-				if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "kill_one_match_50", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+				if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_one_match_50", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 					return CompletedMatch{}, err
 				}
 			}
 
 			if kills >= 100 {
-				if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "kill_one_match_100", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+				if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_one_match_100", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 					return CompletedMatch{}, err
 				}
 			}
@@ -493,19 +459,19 @@ func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialId
 
 		if player.Winner {
 			var delta uint32 = 1
-			if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "win_1", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+			if _, err := progressAchievement(tx, id, AchievementRef{Name: "win_1", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 				return CompletedMatch{}, err
 			}
 
-			if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "win_5", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+			if _, err := progressAchievement(tx, id, AchievementRef{Name: "win_5", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 				return CompletedMatch{}, err
 			}
 
-			if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "win_25", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+			if _, err := progressAchievement(tx, id, AchievementRef{Name: "win_25", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 				return CompletedMatch{}, err
 			}
 
-			if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "win_50", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+			if _, err := progressAchievement(tx, id, AchievementRef{Name: "win_50", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 				return CompletedMatch{}, err
 			}
 		}
@@ -514,17 +480,14 @@ func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialId
 	for _, id := range mostKills.id {
 		var delta uint32 = 1
 
-		if _, err := progressAchievement(c, tx, id, AchievementRef{Name: "most_kills_in_match", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+		if _, err := progressAchievement(tx, id, AchievementRef{Name: "most_kills_in_match", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 			return CompletedMatch{}, err
 		}
 	}
 
 	for key, value := range m.Metrics {
 		if _, err := txExecInsertMatchMetricStmt.Exec(mRes.ID, key, value); err != nil {
-			completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-			c.Error(completeErr)
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-			return CompletedMatch{}, completeErr
+			return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 	}
 
@@ -542,19 +505,13 @@ func recordMatchPayload(c *gin.Context, tx *sql.Tx, m Match, official OfficialId
 			teamNumber := i + 1
 
 			if _, err := txExecInsertMatchAdventureTeam.Exec(mRes.ID, teamNumber, team.Points); err != nil {
-				completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-				c.Error(completeErr)
-				abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-				return CompletedMatch{}, completeErr
+				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 
 			for _, boss := range team.Bosses {
 				// TODO: implement first blood bosses here!
 				if _, err := txExecInsertMatchAdventureTeamBoss.Exec(mRes.ID, teamNumber, boss, false); err != nil {
-					completeErr := fmt.Errorf("%w: %w", ErrDatabase, err)
-					c.Error(completeErr)
-					abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
-					return CompletedMatch{}, completeErr
+					return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 				}
 			}
 		}
@@ -582,7 +539,9 @@ func recordMatchHandler(c *gin.Context) {
 		}
 
 		if err := c.ShouldBind(&m); err != nil {
-			abortStatusError(c, http.StatusBadRequest, fmt.Errorf("%w: %w", ErrMalformedBody, err))
+			err = fmt.Errorf("%w: %w: %w", ErrMalformedMatch, ErrMalformedBody, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusBadRequest, err)
 			return
 		}
 	case 2:
@@ -597,19 +556,25 @@ func recordMatchHandler(c *gin.Context) {
 		}
 		var body requestBody
 		if err := c.ShouldBind(&body); err != nil {
-			abortStatusError(c, http.StatusBadRequest, fmt.Errorf("%w: %w", ErrMalformedBody, err))
+			err = fmt.Errorf("%w: %w", ErrMalformedBody, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusBadRequest, err)
 			return
 		}
 
 		if err := json.Unmarshal([]byte(body.Payload), &m); err != nil {
-			abortStatusError(c, http.StatusBadRequest, fmt.Errorf("%w: %w", ErrMalformedBody, err))
+			err = fmt.Errorf("%w: %w: %w", ErrMalformedMatch, ErrMalformedBody, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusBadRequest, err)
 			return
 		}
 
 		replayHeader = body.Replay
 		// binding not marked as required, check it here (you should always be submitting a replay from here)
 		if replayHeader == nil {
-			abortStatusError(c, http.StatusBadRequest, fmt.Errorf("%w: must include replay", ErrMalformedBody))
+			err := fmt.Errorf("%w: must include replay", ErrMalformedBody)
+			c.Error(err)
+			abortStatusError(c, http.StatusBadRequest, err)
 			return
 		}
 	default:
@@ -620,15 +585,18 @@ func recordMatchHandler(c *gin.Context) {
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
 	defer tx.Rollback()
 
-	mRes, err := recordMatchPayload(c, tx, m, official)
+	mRes, err := recordMatchPayload(tx, m, official)
 	if err != nil {
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -638,8 +606,9 @@ func recordMatchHandler(c *gin.Context) {
 
 		replay, err := replayHeader.Open()
 		if err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrReplaySave, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrReplaySave)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 		defer replay.Close()
@@ -671,8 +640,9 @@ func recordMatchHandler(c *gin.Context) {
 		// FIXME: put legal hold/lock
 
 		if err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrReplaySave, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrReplaySave)
+			err = fmt.Errorf("%w: %w", ErrReplaySave, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -685,8 +655,9 @@ func recordMatchHandler(c *gin.Context) {
 		finalReplayUrl := replayUrl.String()
 
 		if _, err := txExecUpdateMatchReplayStmt.Exec(finalReplayUrl, mRes.ID); err != nil {
-			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+			err = fmt.Errorf("%w: %w", ErrDatabase, err)
+			c.Error(err)
+			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -694,8 +665,9 @@ func recordMatchHandler(c *gin.Context) {
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
-		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
