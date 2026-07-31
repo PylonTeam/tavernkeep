@@ -105,13 +105,18 @@ func getAccoladesHandler(c *gin.Context) {
 }
 
 func reportErrorsToSentry(c *gin.Context) {
+	hub := sentrygin.GetHubFromContext(c)
+	if hub != nil {
+		hub.ConfigureScope(func(scope *sentry.Scope) {
+			scope.SetUser(sentry.User{IPAddress: c.ClientIP()})
+		})
+	}
+
 	c.Next()
 
-	if len(c.Errors) > 0 {
-		if hub := sentrygin.GetHubFromContext(c); hub != nil {
-			for _, err := range c.Errors {
-				hub.CaptureException(err)
-			}
+	if len(c.Errors) > 0 && hub != nil {
+		for _, err := range c.Errors {
+			hub.CaptureException(err)
 		}
 	}
 }
@@ -201,9 +206,20 @@ func main() {
 	}
 	defer closeStatements()
 
+	// FIXME: how to include body content?
 	if dsn, hasDsn := os.LookupEnv("TAVERNKEEP_SENTRY_DSN"); hasDsn {
 		if err := sentry.Init(sentry.ClientOptions{
 			Dsn: dsn,
+			DataCollection: &sentry.DataCollection{
+				UserInfo: sentry.Set(false), // this barely does what it says and confuses more than helps with a reverse proxy installed.
+				Cookies:  &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
+				HTTPHeaders: &sentry.HeaderCollectionConfig{
+					Request: &sentry.KeyValueCollectionBehavior{
+						Mode:  sentry.CollectionDenyList,
+						Terms: []string{"Ticket", "Official-Identity-Subject", "Official-Identity-Fingerprint"},
+					},
+				},
+			},
 		}); err != nil {
 			log.Fatalln(fmt.Errorf("failed to initialize sentry: %w", err))
 		}
@@ -211,6 +227,7 @@ func main() {
 
 	r := gin.Default()
 
+	r.HandleMethodNotAllowed = true
 	r.SetTrustedProxies([]string{"127.0.0.1"})
 
 	r.Use(sentrygin.New(sentrygin.Options{}))

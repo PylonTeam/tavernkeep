@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 
+	sentrygin "github.com/getsentry/sentry-go/gin"
+
+	"github.com/getsentry/sentry-go"
 	"github.com/gin-gonic/gin"
 )
 
@@ -87,6 +91,15 @@ func steamAuthTicketHandler(c *gin.Context) {
 
 	c.Set("id", authUserTicketRes.Response.Params.SteamID)
 
+	if hub := sentrygin.GetHubFromContext(c); hub != nil {
+		hub.ConfigureScope(func(scope *sentry.Scope) {
+			scope.SetUser(sentry.User{
+				ID:        strconv.FormatUint(authUserTicketRes.Response.Params.SteamID, 10),
+				IPAddress: c.ClientIP(),
+			})
+		})
+	}
+
 	c.Next()
 }
 
@@ -111,6 +124,18 @@ func officialAuthHandler(c *gin.Context) {
 	}
 
 	c.Set("official", OfficialIdentity{Subject: subject[0], Fingerprint: fingerprint[0]})
+
+	if hub := sentrygin.GetHubFromContext(c); hub != nil {
+		hub.ConfigureScope(func(scope *sentry.Scope) {
+			scope.SetUser(sentry.User{
+				ID:        subject[0],
+				IPAddress: c.ClientIP(),
+				Data: map[string]string{
+					"fingerprint": fingerprint[0],
+				},
+			})
+		})
+	}
 
 	c.Next()
 }
