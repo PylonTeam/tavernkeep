@@ -206,6 +206,11 @@ func main() {
 	}
 	defer closeStatements()
 
+	r := gin.Default()
+
+	r.HandleMethodNotAllowed = true
+	r.SetTrustedProxies([]string{"127.0.0.1"})
+
 	// FIXME: how to include body content?
 	if dsn, hasDsn := os.LookupEnv("TAVERNKEEP_SENTRY_DSN"); hasDsn {
 		if err := sentry.Init(sentry.ClientOptions{
@@ -223,15 +228,10 @@ func main() {
 		}); err != nil {
 			log.Fatalln(fmt.Errorf("failed to initialize sentry: %w", err))
 		}
+
+		r.Use(sentrygin.New(sentrygin.Options{}))
+		r.Use(reportErrorsToSentry)
 	}
-
-	r := gin.Default()
-
-	r.HandleMethodNotAllowed = true
-	r.SetTrustedProxies([]string{"127.0.0.1"})
-
-	r.Use(sentrygin.New(sentrygin.Options{}))
-	r.Use(reportErrorsToSentry)
 
 	r.GET("/shop/:v", requireVersionHandler, listProductsHandler)
 	r.POST("/shop/purchase/:v", requireVersionHandler, requireContentTypeJson, steamAuthTicketHandler, purchaseProductHandler)
