@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS match (
 	recorded INTEGER NOT NULL DEFAULT (unixepoch()),
 	replay_url TEXT,
 	official_identity_subject TEXT NOT NULL,
-	official_identity_fingerprint TEXT NOT NULL
+	official_identity_fingerprint TEXT NOT NULL,
+	boss INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS match_player (
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS match_player (
 	kills INTEGER NOT NULL,
 	deaths INTEGER NOT NULL,
 	winner INTEGER NOT NULL,
+	boss_damage INTEGER NOT NULL,
 	CONSTRAINT pk PRIMARY KEY (match_id, id),
 	CONSTRAINT reward_check CHECK (reward >= 0),
 	CONSTRAINT winner_check CHECK (winner IN (FALSE, TRUE))
@@ -85,16 +87,31 @@ CREATE TABLE IF NOT EXISTS match_player_item_stat (
 	CONSTRAINT value_check CHECK (value > 0)
 );
 
-CREATE TABLE IF NOT EXISTS match_pvpa_team (
+CREATE TABLE IF NOT EXISTS match_team (
 	match_id INTEGER NOT NULL,
 	team INTEGER NOT NULL,
 	points INTEGER NOT NULL,
+	boss_damage INTEGER NOT NULL,
 	CONSTRAINT pk PRIMARY KEY (match_id, team),
 	CONSTRAINT team_check CHECK (team > 0),
 	CONSTRAINT points_check CHECK (points >= 0)
 );
 
-CREATE TABLE IF NOT EXISTS match_pvpa_team_boss (
+CREATE TABLE IF NOT EXISTS match_player_round (
+	match_id INTEGER NOT NULL,
+	id TEXT NOT NULL,
+	"index" INTEGER NOT NULL,
+	gem_captures INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS match_team_round (
+	match_id INTEGER NOT NULL,
+	team INTEGER NOT NULL,
+	"index" INTEGER NOT NULL,
+	gem_captures INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS match_team_boss (
 	match_id INTEGER NOT NULL,
 	team INTEGER NOT NULL,
 	id INTEGER NOT NULL,
@@ -172,17 +189,21 @@ var (
 	queryMatchPlayerStmt          *sql.Stmt
 	queryMatchPlayerStatsStmt     *sql.Stmt
 	queryMatchPlayerItemStatsStmt *sql.Stmt
-	queryMatchAdventureTeam       *sql.Stmt
-	queryMatchAdventureTeamBoss   *sql.Stmt
+	queryMatchTeamStmt            *sql.Stmt
+	queryMatchTeamBossStmt        *sql.Stmt
+	queryMatchPlayerRoundStmt     *sql.Stmt
+	queryMatchTeamRoundStmt       *sql.Stmt
 
-	execInsertMatchStmt                  *sql.Stmt
-	execUpdateMatchReplayStmt            *sql.Stmt
-	execInsertMatchPlayerStmt            *sql.Stmt
-	execInsertMatchPlayerStatStmt        *sql.Stmt
-	execInsertMatchPlayerItemStatStmt    *sql.Stmt
-	execInsertMatchAdventureTeamStmt     *sql.Stmt
-	execInsertMatchAdventureTeamBossStmt *sql.Stmt
-	execInsertMatchMetricStmt            *sql.Stmt
+	execInsertMatchStmt               *sql.Stmt
+	execUpdateMatchReplayStmt         *sql.Stmt
+	execInsertMatchPlayerStmt         *sql.Stmt
+	execInsertMatchPlayerStatStmt     *sql.Stmt
+	execInsertMatchPlayerItemStatStmt *sql.Stmt
+	execInsertMatchTeamStmt           *sql.Stmt
+	execInsertMatchTeamBossStmt       *sql.Stmt
+	execInsertMatchMetricStmt         *sql.Stmt
+	execInsertMatchPlayerRoundStmt    *sql.Stmt
+	execInsertMatchTeamRoundStmt      *sql.Stmt
 
 	execIncreaseGemsStmt *sql.Stmt
 
@@ -255,7 +276,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if queryMatchStmt, err = db.Prepare("SELECT id, start, end, game_mode, recorded, replay_url, official_identity_subject FROM match WHERE (id = ?1 OR ?1 IS NULL) AND (game_mode = ?2 OR ?2 IS NULL)"); err != nil {
+	if queryMatchStmt, err = db.Prepare("SELECT id, start, end, game_mode, recorded, replay_url, official_identity_subject, boss FROM match WHERE (id = ?1 OR ?1 IS NULL) AND (game_mode = ?2 OR ?2 IS NULL)"); err != nil {
 		return err
 	}
 
@@ -263,7 +284,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if queryMatchPlayerStmt, err = db.Prepare("SELECT id, name, team, reward, kills, deaths, winner FROM match_player WHERE match_id = ?"); err != nil {
+	if queryMatchPlayerStmt, err = db.Prepare("SELECT id, name, team, reward, kills, deaths, winner, boss_damage FROM match_player WHERE match_id = ?"); err != nil {
 		return err
 	}
 
@@ -275,15 +296,23 @@ WHERE prototype = ?
 		return err
 	}
 
-	if queryMatchAdventureTeam, err = db.Prepare("SELECT team, points FROM match_pvpa_team WHERE match_id = ? ORDER BY team DESC"); err != nil {
+	if queryMatchTeamStmt, err = db.Prepare("SELECT team, points, boss_damage FROM match_team WHERE match_id = ? ORDER BY team DESC"); err != nil {
 		return err
 	}
 
-	if queryMatchAdventureTeamBoss, err = db.Prepare("SELECT team, id, first_blood FROM match_pvpa_team_boss WHERE match_id = ?"); err != nil {
+	if queryMatchTeamBossStmt, err = db.Prepare("SELECT team, id, first_blood FROM match_team_boss WHERE match_id = ? ORDER BY team DESC"); err != nil {
 		return err
 	}
 
-	if execInsertMatchStmt, err = db.Prepare("INSERT INTO match (start, end, game_mode, official_identity_subject, official_identity_fingerprint) VALUES (?, ?, ?, ?, ?) RETURNING id, recorded"); err != nil {
+	if queryMatchPlayerRoundStmt, err = db.Prepare("SELECT \"index\", gem_captures FROM match_player_round WHERE match_id = ? AND id = ? ORDER BY \"index\" DESC"); err != nil {
+		return err
+	}
+
+	if queryMatchTeamRoundStmt, err = db.Prepare("SELECT team, \"index\", gem_captures FROM match_team_round WHERE match_id = ? ORDER BY team DESC, \"index\" DESC"); err != nil {
+		return err
+	}
+
+	if execInsertMatchStmt, err = db.Prepare("INSERT INTO match (start, end, game_mode, official_identity_subject, official_identity_fingerprint, boss) VALUES (?, ?, ?, ?, ?, ?) RETURNING id, recorded"); err != nil {
 		return err
 	}
 
@@ -291,7 +320,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if execInsertMatchPlayerStmt, err = db.Prepare("INSERT INTO match_player (match_id, id, name, team, reward, kills, deaths, winner) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"); err != nil {
+	if execInsertMatchPlayerStmt, err = db.Prepare("INSERT INTO match_player (match_id, id, name, team, reward, kills, deaths, winner, boss_damage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"); err != nil {
 		return err
 	}
 
@@ -303,15 +332,23 @@ WHERE prototype = ?
 		return err
 	}
 
-	if execInsertMatchAdventureTeamStmt, err = db.Prepare("INSERT INTO match_pvpa_team (match_id, team, points) VALUES (?, ?, ?)"); err != nil {
+	if execInsertMatchTeamStmt, err = db.Prepare("INSERT INTO match_team (match_id, team, points, boss_damage) VALUES (?, ?, ?, ?)"); err != nil {
 		return err
 	}
 
-	if execInsertMatchAdventureTeamBossStmt, err = db.Prepare("INSERT INTO match_pvpa_team_boss (match_id, team, id, first_blood) VALUES (?, ?, ?, ?)"); err != nil {
+	if execInsertMatchTeamBossStmt, err = db.Prepare("INSERT INTO match_team_boss (match_id, team, id, first_blood) VALUES (?, ?, ?, ?)"); err != nil {
 		return err
 	}
 
 	if execInsertMatchMetricStmt, err = db.Prepare("INSERT INTO match_metric (match_id, key, value) VALUES (?, ?, ?)"); err != nil {
+		return err
+	}
+
+	if execInsertMatchPlayerRoundStmt, err = db.Prepare("INSERT INTO match_player_round (match_id, id, \"index\", gem_captures) VALUES (?, ?, ?, ?)"); err != nil {
+		return err
+	}
+
+	if execInsertMatchTeamRoundStmt, err = db.Prepare("INSERT INTO match_team_round (match_id, team, \"index\", gem_captures) VALUES (?, ?, ?, ?)"); err != nil {
 		return err
 	}
 
@@ -359,12 +396,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if queryMatchAggregatePlayerTeamPointsStmt, err = db.Prepare(`SELECT COALESCE(SUM(mpt.points), 0)
-FROM match_player mp
-LEFT JOIN match_pvpa_team mpt
-    ON mp.match_id = mpt.match_id
-    AND mp.team = mpt.team
-WHERE mp.id = ?`); err != nil {
+	if queryMatchAggregatePlayerTeamPointsStmt, err = db.Prepare("SELECT COALESCE(SUM(mt.points), 0) FROM match_player mp LEFT JOIN match_team mt ON mp.match_id = mt.match_id AND mp.team = mt.team WHERE mp.id = ?"); err != nil {
 		return err
 	}
 
@@ -384,17 +416,21 @@ func closeStatements() {
 	queryAchievementDefStmt.Close()
 	queryAchievementDefsStmt.Close()
 	execIncreaseGemsStmt.Close()
+	execInsertMatchTeamRoundStmt.Close()
+	execInsertMatchPlayerRoundStmt.Close()
 	execInsertMatchMetricStmt.Close()
-	execInsertMatchAdventureTeamBossStmt.Close()
-	execInsertMatchAdventureTeamStmt.Close()
+	execInsertMatchTeamBossStmt.Close()
+	execInsertMatchTeamStmt.Close()
 	execInsertMatchPlayerItemStatStmt.Close()
 	execInsertMatchPlayerStatStmt.Close()
 	execInsertMatchPlayerStmt.Close()
 	execUpdateMatchReplayStmt.Close()
 	execInsertMatchStmt.Close()
 
-	queryMatchAdventureTeamBoss.Close()
-	queryMatchAdventureTeam.Close()
+	queryMatchTeamRoundStmt.Close()
+	queryMatchPlayerRoundStmt.Close()
+	queryMatchTeamBossStmt.Close()
+	queryMatchTeamStmt.Close()
 	queryMatchPlayerItemStatsStmt.Close()
 	queryMatchPlayerStatsStmt.Close()
 	queryMatchPlayerStmt.Close()

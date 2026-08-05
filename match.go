@@ -22,20 +22,32 @@ type Player struct {
 	Name string `json:"name" binding:"required"`
 	Team uint32 `json:"team" binding:"required"`
 
-	Reward uint32 `json:"reward" binding:"required"`
+	Reward uint32 `json:"reward,omitempty" binding:"required"`
 
 	Kills  int32 `json:"kills" binding:"required"`
 	Deaths int32 `json:"deaths" binding:"required"`
 	Winner bool  `json:"winner,omitempty"`
 
-	Stats     map[string]uint32           `json:"stats" binding:"required"`
-	ItemStats map[string]map[int32]uint32 `json:"itemStats" binding:"required"`
+	Stats     map[string]uint32           `json:"stats,omitempty" binding:"required"`
+	ItemStats map[string]map[int32]uint32 `json:"itemStats,omitempty" binding:"required"`
+
+	// Arenas
+	BossDamage uint32 `json:"bossDamage,omitempty"`
+
+	// Capture the Gem
+	GemCaptures []uint32 `json:"gemCaptures,omitempty"`
 }
 
 type Team struct {
-	Points int `json:"points" binding:"required"`
-	// TODO: implement first blood bosses here
-	Bosses []int `json:"bosses" binding:"required"`
+	// PvP Adventure
+	Points int32   `json:"points,omitempty"`
+	Bosses []int16 `json:"bosses,omitempty"`
+
+	// Capture the Gem
+	GemCaptures []uint32 `json:"gemCaptures,omitempty"`
+
+	// Arenas
+	BossDamage uint32 `json:"bossDamage,omitempty"`
 }
 
 type Match struct {
@@ -47,6 +59,9 @@ type Match struct {
 	Metrics map[string]string `json:"metrics,omitempty" binding:"required"`
 
 	Teams []*Team `json:"teams" binding:"required"`
+
+	// Arenas
+	Boss int16 `json:"boss,omitempty"`
 }
 
 func (m *Match) UnmarshalJSON(b []byte) error {
@@ -55,20 +70,20 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 		return err
 	}
 
+	if m.GameMode != "pvpa" && m.GameMode != "ctg" && m.GameMode != "arenas" {
+		return fmt.Errorf("%w: %w: %s", ErrMalformedMatch, ErrUnsupportedGameMode, m.GameMode)
+	}
+
 	if len(m.Players) == 0 {
 		return fmt.Errorf("%w: no players", ErrMalformedMatch)
 	}
 
-	if m.GameMode == "pvpa" {
-		if len(m.Teams) == 0 {
-			return fmt.Errorf("%w: no teams", ErrMalformedMatch)
-		}
+	if len(m.Teams) == 0 {
+		return fmt.Errorf("%w: no teams", ErrMalformedMatch)
+	}
 
-		if m.Teams[0] != nil {
-			return fmt.Errorf("%w: team None must be null", ErrMalformedMatch)
-		}
-	} else if m.GameMode != "ctg" && m.GameMode != "arenas" {
-		return fmt.Errorf("%w: %w: %s", ErrMalformedMatch, ErrUnsupportedGameMode, m.GameMode)
+	if m.Teams[0] != nil {
+		return fmt.Errorf("%w: team None must be null", ErrMalformedMatch)
 	}
 
 	return nil
@@ -86,7 +101,7 @@ type CompletedMatch struct {
 func scanMatch(rows *sql.Rows, m *CompletedMatch) error {
 	var start, end, recorded int64
 
-	if err := rows.Scan(&m.ID, &start, &end, &m.GameMode, &recorded, &m.ReplayUrl, &m.OfficialIdentity); err != nil {
+	if err := rows.Scan(&m.ID, &start, &end, &m.GameMode, &recorded, &m.ReplayUrl, &m.OfficialIdentity, &m.Boss); err != nil {
 		return fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
@@ -96,8 +111,18 @@ func scanMatch(rows *sql.Rows, m *CompletedMatch) error {
 	return nil
 }
 
-func queryMatch(txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPlayerStatsStmt *sql.Stmt, txQueryMatchPlayerItemStatsStmt *sql.Stmt, txQueryMatchAdventureTeam *sql.Stmt, txQueryMatchAdventureTeamBoss *sql.Stmt, m *CompletedMatch) error {
-	rows, err := txQueryMatchPlayerStmt.Query(m.ID)
+type queryMatchContext struct {
+	txQueryMatchPlayerStmt          *sql.Stmt
+	txQueryMatchPlayerStatsStmt     *sql.Stmt
+	txQueryMatchPlayerItemStatsStmt *sql.Stmt
+	txQueryMatchTeamStmt            *sql.Stmt
+	txQueryMatchTeamBossStmt        *sql.Stmt
+	txQueryMatchPlayerRoundStmt     *sql.Stmt
+	txQueryMatchTeamRoundStmt       *sql.Stmt
+}
+
+func queryMatch(ctx *queryMatchContext, m *CompletedMatch) error {
+	rows, err := ctx.txQueryMatchPlayerStmt.Query(m.ID)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
@@ -108,126 +133,189 @@ func queryMatch(txQueryMatchPlayerStmt *sql.Stmt, txQueryMatchPlayerStatsStmt *s
 		var id uint64
 		var player Player
 
-		if err := rows.Scan(&id, &player.Name, &player.Team, &player.Reward, &player.Kills, &player.Deaths, &player.Winner); err != nil {
+		if err := rows.Scan(&id, &player.Name, &player.Team, &player.Reward, &player.Kills, &player.Deaths, &player.Winner, &player.BossDamage); err != nil {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 
 		player.Stats = map[string]uint32{}
-		{
-			rows, err := txQueryMatchPlayerStatsStmt.Query(m.ID, id)
-			if err != nil {
-				return fmt.Errorf("%w: %w", ErrDatabase, err)
-			}
-			defer rows.Close()
+		rows, err = ctx.txQueryMatchPlayerStatsStmt.Query(m.ID, id)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
+		}
+		defer rows.Close()
 
-			for rows.Next() {
-				var key string
-				var value uint32
-				if err := rows.Scan(&key, &value); err != nil {
-					return fmt.Errorf("%w: %w", ErrDatabase, err)
-				}
-
-				player.Stats[key] = value
-			}
-
-			if err := rows.Err(); err != nil {
+		for rows.Next() {
+			var key string
+			var value uint32
+			if err := rows.Scan(&key, &value); err != nil {
 				return fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 
-			m.Players[id] = player
+			player.Stats[key] = value
+		}
+
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 
 		player.ItemStats = map[string]map[int32]uint32{}
-		{
-			rows, err := txQueryMatchPlayerItemStatsStmt.Query(m.ID, id)
-			if err != nil {
-				return fmt.Errorf("%w: %w", ErrDatabase, err)
-			}
-			defer rows.Close()
-
-			for rows.Next() {
-				var key string
-				var item int32
-				var value uint32
-				if err := rows.Scan(&key, &item, &value); err != nil {
-					return fmt.Errorf("%w: %w", ErrDatabase, err)
-				}
-
-				if vals, hasVals := player.ItemStats[key]; hasVals {
-					// FIXME: is any of this needed?
-					vals[item] = value
-					player.ItemStats[key] = vals
-				} else {
-					player.ItemStats[key] = map[int32]uint32{item: value}
-				}
-			}
-
-			if err := rows.Err(); err != nil {
-				return fmt.Errorf("%w: %w", ErrDatabase, err)
-			}
-
-			m.Players[id] = player
+		rows, err = ctx.txQueryMatchPlayerItemStatsStmt.Query(m.ID, id)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var key string
+			var item int32
+			var value uint32
+			if err := rows.Scan(&key, &item, &value); err != nil {
+				return fmt.Errorf("%w: %w", ErrDatabase, err)
+			}
+
+			if vals, hasVals := player.ItemStats[key]; hasVals {
+				// FIXME: is any of this needed?
+				vals[item] = value
+				player.ItemStats[key] = vals
+			} else {
+				player.ItemStats[key] = map[int32]uint32{item: value}
+			}
+		}
+
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
+		}
+
+		rows, err = ctx.txQueryMatchPlayerRoundStmt.Query(m.ID, id)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var i int
+			var gemCaptures uint32
+			if err := rows.Scan(&i, &gemCaptures); err != nil {
+				return fmt.Errorf("%w: %w", ErrDatabase, err)
+			}
+
+			// first iteration will have the largest index, because this is in descending order,
+			// so use that to initialize our length.
+			if player.GemCaptures == nil {
+				player.GemCaptures = make([]uint32, i+1)
+			}
+
+			player.GemCaptures[i] = gemCaptures
+		}
+
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
+		}
+
+		m.Players[id] = player
 	}
 
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
-	if m.GameMode == "pvpa" {
-		rows, err = txQueryMatchAdventureTeam.Query(m.ID)
-		if err != nil {
+	rows, err = ctx.txQueryMatchTeamStmt.Query(m.ID)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrDatabase, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var teamNumber int
+		var points int32
+		var bossDamage uint32
+
+		if err := rows.Scan(&teamNumber, &points, &bossDamage); err != nil {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
-		defer rows.Close()
 
-		for rows.Next() {
-			var teamNumber, points int
-
-			if err := rows.Scan(&teamNumber, &points); err != nil {
-				return fmt.Errorf("%w: %w", ErrDatabase, err)
-			}
-
-			// first iteration will have the largest index, because this is in descending order,
-			// so use that to initialize our length.
-			if m.Teams == nil {
-				m.Teams = make([]*Team, teamNumber+1)
-			}
-
-			team := new(Team)
-			team.Points = points
-			team.Bosses = []int{}
-			m.Teams[teamNumber] = team
+		// first iteration will have the largest index, because this is in descending order,
+		// so use that to initialize our length.
+		if m.Teams == nil {
+			m.Teams = make([]*Team, teamNumber+1)
 		}
 
-		if err := rows.Err(); err != nil {
+		team := new(Team)
+		team.Points = points
+		team.BossDamage = bossDamage
+		m.Teams[teamNumber] = team
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrDatabase, err)
+	}
+
+	rows, err = ctx.txQueryMatchTeamBossStmt.Query(m.ID)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrDatabase, err)
+	}
+
+	defer rows.Close()
+	for rows.Next() {
+		var teamNumber int
+		var id int16
+		// TODO: Make use of first blood for bosses
+		var firstBlood bool
+
+		if err := rows.Scan(&teamNumber, &id, &firstBlood); err != nil {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
-
 		}
 
-		rows, err = txQueryMatchAdventureTeamBoss.Query(m.ID)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrDatabase, err)
-
+		// first iteration will have the largest index, because this is in descending order,
+		// so use that to initialize our length.
+		if m.Teams == nil {
+			m.Teams = make([]*Team, teamNumber+1)
 		}
 
-		defer rows.Close()
-		for rows.Next() {
-			var teamNumber, id int
-			// TODO: Make use of first blood for bosses
-			var firstBlood bool
-
-			if err := rows.Scan(&teamNumber, &id, &firstBlood); err != nil {
-				return fmt.Errorf("%w: %w", ErrDatabase, err)
-			}
-
+		if m.Teams[teamNumber].Bosses == nil {
+			m.Teams[teamNumber].Bosses = []int16{id}
+		} else {
 			m.Teams[teamNumber].Bosses = append(m.Teams[teamNumber].Bosses, id)
 		}
 	}
 
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("%w: %w", ErrDatabase, err)
+	}
 
+	rows, err = ctx.txQueryMatchTeamRoundStmt.Query(m.ID)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrDatabase, err)
+	}
+
+	defer rows.Close()
+	for rows.Next() {
+		var teamNumber, i int
+		var gemCaptures uint32
+
+		if err := rows.Scan(&teamNumber, &i, &gemCaptures); err != nil {
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
+		}
+
+		// first iteration will have the largest index, because this is in descending order,
+		// so use that to initialize our length.
+		if m.Teams == nil {
+			m.Teams = make([]*Team, teamNumber+1)
+		}
+
+		if m.Teams[teamNumber].GemCaptures == nil {
+			m.Teams[teamNumber].GemCaptures = make([]uint32, i+1)
+		}
+
+		m.Teams[teamNumber].GemCaptures[i] = gemCaptures
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrDatabase, err)
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
 	return nil
@@ -260,18 +348,24 @@ func getMatchHandler(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
+	ctx := queryMatchContext{}
+
 	txQueryMatchStmt := tx.Stmt(queryMatchStmt)
 	defer txQueryMatchStmt.Close()
-	txQueryMatchPlayerStmt := tx.Stmt(queryMatchPlayerStmt)
-	defer txQueryMatchPlayerStmt.Close()
-	txQueryMatchPlayerStatsStmt := tx.Stmt(queryMatchPlayerStatsStmt)
-	defer txQueryMatchPlayerStatsStmt.Close()
-	txQueryMatchPlayerItemStatsStmt := tx.Stmt(queryMatchPlayerItemStatsStmt)
-	defer txQueryMatchPlayerItemStatsStmt.Close()
-	txQueryMatchAdventureTeam := tx.Stmt(queryMatchAdventureTeam)
-	defer txQueryMatchAdventureTeam.Close()
-	txQueryMatchAdventureTeamBoss := tx.Stmt(queryMatchAdventureTeamBoss)
-	defer txQueryMatchAdventureTeamBoss.Close()
+	ctx.txQueryMatchPlayerStmt = tx.Stmt(queryMatchPlayerStmt)
+	defer ctx.txQueryMatchPlayerStmt.Close()
+	ctx.txQueryMatchPlayerStatsStmt = tx.Stmt(queryMatchPlayerStatsStmt)
+	defer ctx.txQueryMatchPlayerStatsStmt.Close()
+	ctx.txQueryMatchPlayerItemStatsStmt = tx.Stmt(queryMatchPlayerItemStatsStmt)
+	defer ctx.txQueryMatchPlayerItemStatsStmt.Close()
+	ctx.txQueryMatchTeamStmt = tx.Stmt(queryMatchTeamStmt)
+	defer ctx.txQueryMatchTeamStmt.Close()
+	ctx.txQueryMatchTeamBossStmt = tx.Stmt(queryMatchTeamBossStmt)
+	defer ctx.txQueryMatchTeamBossStmt.Close()
+	ctx.txQueryMatchPlayerRoundStmt = tx.Stmt(queryMatchPlayerRoundStmt)
+	defer ctx.txQueryMatchPlayerRoundStmt.Close()
+	ctx.txQueryMatchTeamRoundStmt = tx.Stmt(queryMatchTeamRoundStmt)
+	defer ctx.txQueryMatchTeamRoundStmt.Close()
 
 	var matches = []CompletedMatch{}
 	if query.ID != nil {
@@ -322,7 +416,7 @@ func getMatchHandler(c *gin.Context) {
 				return
 			}
 
-			if err = queryMatch(txQueryMatchPlayerStmt, txQueryMatchPlayerStatsStmt, txQueryMatchPlayerItemStatsStmt, txQueryMatchAdventureTeam, txQueryMatchAdventureTeamBoss, &m); err != nil {
+			if err = queryMatch(&ctx, &m); err != nil {
 				c.Error(err)
 				abortStatusError(c, http.StatusInternalServerError, err)
 				return
@@ -355,7 +449,7 @@ func getMatchHandler(c *gin.Context) {
 				return
 			}
 
-			if err = queryMatch(txQueryMatchPlayerStmt, txQueryMatchPlayerStatsStmt, txQueryMatchPlayerItemStatsStmt, txQueryMatchAdventureTeam, txQueryMatchAdventureTeamBoss, &m); err != nil {
+			if err = queryMatch(&ctx, &m); err != nil {
 				c.Error(err)
 				abortStatusError(c, http.StatusInternalServerError, err)
 				return
@@ -391,9 +485,13 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 	defer txExecInsertMatchPlayerStatStmt.Close()
 	txExecInsertMatchPlayerItemStatStmt := tx.Stmt(execInsertMatchPlayerItemStatStmt)
 	defer txExecInsertMatchPlayerItemStatStmt.Close()
+	txExecInsertMatchPlayerRoundStmt := tx.Stmt(execInsertMatchPlayerRoundStmt)
+	defer txExecInsertMatchPlayerRoundStmt.Close()
+	txExecInsertMatchTeamRoundStmt := tx.Stmt(execInsertMatchTeamRoundStmt)
+	defer txExecInsertMatchTeamRoundStmt.Close()
 
 	var recorded int64
-	if err := txExecInsertMatchStmt.QueryRow(m.Start.Unix(), m.End.Unix(), m.GameMode, official.Subject, official.Fingerprint).Scan(&mRes.ID, &recorded); err != nil {
+	if err := txExecInsertMatchStmt.QueryRow(m.Start.Unix(), m.End.Unix(), m.GameMode, official.Subject, official.Fingerprint, m.Boss).Scan(&mRes.ID, &recorded); err != nil {
 		return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
@@ -406,7 +504,7 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 	mostKills := recordMostKills{id: []uint64{}}
 
 	for id, player := range m.Players {
-		if _, err := txExecInsertMatchPlayerStmt.Exec(mRes.ID, id, player.Name, player.Team, player.Reward, player.Kills, player.Deaths, player.Winner); err != nil {
+		if _, err := txExecInsertMatchPlayerStmt.Exec(mRes.ID, id, player.Name, player.Team, player.Reward, player.Kills, player.Deaths, player.Winner, player.BossDamage); err != nil {
 			return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 
@@ -427,6 +525,12 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 				if _, err := txExecInsertMatchPlayerItemStatStmt.Exec(mRes.ID, id, key, item, value); err != nil {
 					return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 				}
+			}
+		}
+
+		for i, gemCaptures := range player.GemCaptures {
+			if _, err := txExecInsertMatchPlayerRoundStmt.Exec(mRes.ID, id, i, gemCaptures); err != nil {
+				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 		}
 
@@ -495,28 +599,32 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 		}
 	}
 
-	if m.GameMode == "pvpa" {
-		txExecInsertMatchAdventureTeam := tx.Stmt(execInsertMatchAdventureTeamStmt)
-		defer txExecInsertMatchAdventureTeam.Close()
-		txExecInsertMatchAdventureTeamBoss := tx.Stmt(execInsertMatchAdventureTeamBossStmt)
-		defer txExecInsertMatchAdventureTeamBoss.Close()
+	txExecInsertMatchTeam := tx.Stmt(execInsertMatchTeamStmt)
+	defer txExecInsertMatchTeam.Close()
+	txExecInsertMatchTeamBoss := tx.Stmt(execInsertMatchTeamBossStmt)
+	defer txExecInsertMatchTeamBoss.Close()
 
-		for i, team := range m.Teams[1:] {
-			if team == nil {
-				continue
-			}
+	for i, team := range m.Teams[1:] {
+		if team == nil {
+			continue
+		}
 
-			teamNumber := i + 1
+		teamNumber := i + 1
 
-			if _, err := txExecInsertMatchAdventureTeam.Exec(mRes.ID, teamNumber, team.Points); err != nil {
+		if _, err := txExecInsertMatchTeam.Exec(mRes.ID, teamNumber, team.Points, team.BossDamage); err != nil {
+			return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
+		}
+
+		for _, boss := range team.Bosses {
+			// TODO: implement first blood bosses here!
+			if _, err := txExecInsertMatchTeamBoss.Exec(mRes.ID, teamNumber, boss, false); err != nil {
 				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
+		}
 
-			for _, boss := range team.Bosses {
-				// TODO: implement first blood bosses here!
-				if _, err := txExecInsertMatchAdventureTeamBoss.Exec(mRes.ID, teamNumber, boss, false); err != nil {
-					return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
-				}
+		for i, gemCaptures := range team.GemCaptures {
+			if _, err := txExecInsertMatchTeamRoundStmt.Exec(mRes.ID, teamNumber, i, gemCaptures); err != nil {
+				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 		}
 	}
