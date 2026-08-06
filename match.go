@@ -32,7 +32,7 @@ type Player struct {
 	ItemStats map[string]map[int32]uint32 `json:"itemStats,omitempty" binding:"required"`
 
 	// Arenas
-	BossDamage uint32 `json:"bossDamage,omitempty"`
+	BossDamage *uint32 `json:"bossDamage,omitempty"`
 
 	// Capture the Gem
 	GemCaptures []uint32 `json:"gemCaptures,omitempty"`
@@ -40,14 +40,14 @@ type Player struct {
 
 type Team struct {
 	// PvP Adventure
-	Points int32   `json:"points,omitempty"`
+	Points *int32  `json:"points,omitempty"`
 	Bosses []int16 `json:"bosses,omitempty"`
 
 	// Capture the Gem
 	GemCaptures []uint32 `json:"gemCaptures,omitempty"`
 
 	// Arenas
-	BossDamage uint32 `json:"bossDamage,omitempty"`
+	BossDamage *uint32 `json:"bossDamage,omitempty"`
 }
 
 type Match struct {
@@ -61,7 +61,7 @@ type Match struct {
 	Teams []*Team `json:"teams" binding:"required"`
 
 	// Arenas
-	Boss int16 `json:"boss,omitempty"`
+	Boss *int16 `json:"boss,omitempty"`
 }
 
 func (m *Match) UnmarshalJSON(b []byte) error {
@@ -70,12 +70,16 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 		return fmt.Errorf("%w: %w", ErrMalformedMatch, err)
 	}
 
-	if m.Start.After(m.End) {
-		return fmt.Errorf("%w: cannot start after end", ErrMalformedMatch)
+	isPvpa := m.GameMode == "pvpa"
+	isArenas := m.GameMode == "arenas"
+	isCtg := m.GameMode == "ctg"
+
+	if !isPvpa && !isArenas && !isCtg {
+		return fmt.Errorf("%w: %w: %s", ErrMalformedMatch, ErrUnsupportedGameMode, m.GameMode)
 	}
 
-	if m.GameMode != "pvpa" && m.GameMode != "ctg" && m.GameMode != "arenas" {
-		return fmt.Errorf("%w: %w: %s", ErrMalformedMatch, ErrUnsupportedGameMode, m.GameMode)
+	if m.Start.After(m.End) {
+		return fmt.Errorf("%w: cannot start after end", ErrMalformedMatch)
 	}
 
 	if len(m.Players) == 0 {
@@ -88,6 +92,40 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 
 	if m.Teams[0] != nil {
 		return fmt.Errorf("%w: team None must be null", ErrMalformedMatch)
+	}
+
+	if !isArenas {
+		if m.Boss != nil {
+			return fmt.Errorf("%w: cannot provide boss for this game mode", ErrMalformedMatch)
+		}
+	}
+
+	for _, p := range m.Players {
+		if !isArenas && p.BossDamage != nil {
+			return fmt.Errorf("%w: cannot provide player boss damage for this game mode", ErrMalformedMatch)
+		}
+
+		if !isCtg && p.GemCaptures != nil {
+			return fmt.Errorf("%w: cannot provide player gem captures for this game mode", ErrMalformedMatch)
+		}
+	}
+
+	for _, t := range m.Teams {
+		if t == nil {
+			continue
+		}
+
+		if !isPvpa && t.Points != nil {
+			return fmt.Errorf("%w: cannot provide points for this game mode", ErrMalformedMatch)
+		}
+
+		if !isArenas && t.BossDamage != nil {
+			return fmt.Errorf("%w: cannot provide team boss damage for this game mode", ErrMalformedMatch)
+		}
+
+		if !isCtg && t.GemCaptures != nil {
+			return fmt.Errorf("%w: cannot provide team gem captures for this game mode", ErrMalformedMatch)
+		}
 	}
 
 	return nil
@@ -231,10 +269,9 @@ func queryMatch(ctx *queryMatchContext, m *CompletedMatch) error {
 
 	for rows.Next() {
 		var teamNumber int
-		var points int32
-		var bossDamage uint32
+		team := new(Team)
 
-		if err := rows.Scan(&teamNumber, &points, &bossDamage); err != nil {
+		if err := rows.Scan(&teamNumber, &team.Points, &team.BossDamage); err != nil {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 
@@ -244,9 +281,6 @@ func queryMatch(ctx *queryMatchContext, m *CompletedMatch) error {
 			m.Teams = make([]*Team, teamNumber+1)
 		}
 
-		team := new(Team)
-		team.Points = points
-		team.BossDamage = bossDamage
 		m.Teams[teamNumber] = team
 	}
 

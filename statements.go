@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS match (
 	replay_url TEXT,
 	official_identity_subject TEXT NOT NULL,
 	official_identity_fingerprint TEXT NOT NULL,
-	boss INTEGER NOT NULL,
+	boss INTEGER,
 	CONSTRAINT start_end_unity_check CHECK (start <= end)
 );
 
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS match_player (
 	kills INTEGER NOT NULL,
 	deaths INTEGER NOT NULL,
 	winner INTEGER NOT NULL,
-	boss_damage INTEGER NOT NULL,
+	boss_damage INTEGER,
 	CONSTRAINT pk PRIMARY KEY (match_id, id),
 	CONSTRAINT reward_check CHECK (reward >= 0),
 	CONSTRAINT winner_check CHECK (winner IN (FALSE, TRUE))
@@ -91,8 +91,8 @@ CREATE TABLE IF NOT EXISTS match_player_item_stat (
 CREATE TABLE IF NOT EXISTS match_team (
 	match_id INTEGER NOT NULL,
 	team INTEGER NOT NULL,
-	points INTEGER NOT NULL,
-	boss_damage INTEGER NOT NULL,
+	points INTEGER,
+	boss_damage INTEGER,
 	CONSTRAINT pk PRIMARY KEY (match_id, team),
 	CONSTRAINT team_check CHECK (team > 0),
 	CONSTRAINT points_check CHECK (points >= 0)
