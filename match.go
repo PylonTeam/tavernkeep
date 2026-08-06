@@ -67,7 +67,7 @@ type Match struct {
 func (m *Match) UnmarshalJSON(b []byte) error {
 	type aux Match
 	if err := json.Unmarshal(b, (*aux)(m)); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrMalformedMatch, err)
 	}
 
 	if m.GameMode != "pvpa" && m.GameMode != "ctg" && m.GameMode != "arenas" {
@@ -651,7 +651,7 @@ func recordMatchHandler(c *gin.Context) {
 		}
 
 		if err := c.ShouldBind(&m); err != nil {
-			err = fmt.Errorf("%w: %w: %w", ErrMalformedMatch, ErrMalformedBody, err)
+			err = fmt.Errorf("%w: %w", ErrMalformedBody, err)
 			abortStatusError(c, http.StatusBadRequest, err)
 			return
 		}
@@ -673,7 +673,7 @@ func recordMatchHandler(c *gin.Context) {
 		}
 
 		if err := json.Unmarshal([]byte(body.Payload), &m); err != nil {
-			err = fmt.Errorf("%w: %w: %w", ErrMalformedMatch, ErrMalformedBody, err)
+			err = fmt.Errorf("%w: %w", ErrMalformedBody, err)
 			abortStatusError(c, http.StatusBadRequest, err)
 			return
 		}
