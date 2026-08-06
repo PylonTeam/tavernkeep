@@ -178,6 +178,12 @@ func requireVersionHandler(c *gin.Context) {
 	c.Next()
 }
 
+func corsPublic(c *gin.Context) {
+	c.Header("Access-Control-Allow-Origin", "https://emyhrberg.github.io")
+
+	c.Next()
+}
+
 func main() {
 	if err := initS3(); err != nil {
 		log.Fatalln(fmt.Errorf("failed to initialize s3: %w", err))
@@ -233,14 +239,14 @@ func main() {
 		r.Use(reportErrorsToSentry)
 	}
 
-	r.GET("/shop/:v", requireVersionHandler, listProductsHandler)
+	r.GET("/shop/:v", corsPublic, requireVersionHandler, listProductsHandler)
 	r.POST("/shop/purchase/:v", requireVersionHandler, requireContentTypeJson, steamAuthTicketHandler, purchaseProductHandler)
 
 	r.GET("/profile/:v", requireVersionHandler, getProfileHandler)
 	r.GET("/profile/inventory/:v", requireVersionHandler, steamAuthTicketHandler, getInventoryHandler)
 	r.POST("/profile/equip/:v", requireVersionHandler, requireContentTypeJson, steamAuthTicketHandler, equipItemHandler)
 
-	r.GET("/match/:v", requireVersionHandler, getMatchHandler)
+	r.GET("/match/:v", corsPublic, requireVersionHandler, getMatchHandler)
 	r.POST("/match/:v", requireVersionHandler, officialAuthHandler, recordMatchHandler)
 
 	r.GET("/accolades/:v", requireVersionHandler, getAccoladesHandler)
@@ -249,7 +255,7 @@ func main() {
 	r.POST("/achievements/:v", requireVersionHandler, requireContentTypeJson, officialAuthHandler, progressAchievementHandler)
 	r.POST("/achievements/claim/:v", requireVersionHandler, requireContentTypeJson, steamAuthTicketHandler, claimAchievementHandler)
 
-	r.GET("/leaderboard/:v", requireVersionHandler, calcLeaderboardHandler)
+	r.GET("/leaderboard/:v", corsPublic, requireVersionHandler, calcLeaderboardHandler)
 
 	if err := r.Run(":8080"); err != nil {
 		log.Fatalln(fmt.Errorf("unable to bind Gin engine to port 8080: %w", err))
