@@ -384,7 +384,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if queryMatchAggregatePlayerStmt, err = db.Prepare("SELECT id, name, SUM(kills), SUM(deaths), SUM(winner), COUNT() FROM match_player GROUP BY id ORDER BY SUM(winner) DESC, SUM(kills) DESC"); err != nil {
+	if queryMatchAggregatePlayerStmt, err = db.Prepare("SELECT match_player.id, name, SUM(kills), SUM(deaths), SUM(winner), COUNT() FROM match_player JOIN match ON match_player.match_id = match.id GROUP BY match_player.id ORDER BY SUM(winner) DESC, SUM(kills) DESC, MAX(match.start)"); err != nil {
 		return err
 	}
 
