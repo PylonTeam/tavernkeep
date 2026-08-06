@@ -70,6 +70,10 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 		return fmt.Errorf("%w: %w", ErrMalformedMatch, err)
 	}
 
+	if m.Start.After(m.End) {
+		return fmt.Errorf("%w: cannot start after end", ErrMalformedMatch)
+	}
+
 	if m.GameMode != "pvpa" && m.GameMode != "ctg" && m.GameMode != "arenas" {
 		return fmt.Errorf("%w: %w: %s", ErrMalformedMatch, ErrUnsupportedGameMode, m.GameMode)
 	}

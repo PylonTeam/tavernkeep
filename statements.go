@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS match (
 	replay_url TEXT,
 	official_identity_subject TEXT NOT NULL,
 	official_identity_fingerprint TEXT NOT NULL,
-	boss INTEGER NOT NULL
+	boss INTEGER NOT NULL,
+	CONSTRAINT start_end_unity_check CHECK (start <= end)
 );
 
 CREATE TABLE IF NOT EXISTS match_player (
