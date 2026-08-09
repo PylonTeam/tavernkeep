@@ -39,6 +39,16 @@ func listProductsHandler(c *gin.Context) {
 		return
 	}
 
+	type requestQuery struct {
+		Prototype *string `form:"prototype"`
+	}
+	var query requestQuery
+
+	if err := c.ShouldBindQuery(&query); err != nil {
+		abortStatusError(c, http.StatusBadRequest, fmt.Errorf("%w: %w", ErrMalformedQuery, err))
+		return
+	}
+
 	// FIXME: nil context? BAD!!!
 	tx, err := db.BeginTx(context.TODO(), nil)
 	if err != nil {
@@ -52,7 +62,7 @@ func listProductsHandler(c *gin.Context) {
 	txQueryProductsStmt := tx.Stmt(queryProductsStmt)
 	defer txQueryProductsStmt.Close()
 
-	rows, err := txQueryProductsStmt.Query()
+	rows, err := txQueryProductsStmt.Query(query.Prototype)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", ErrDatabase, err)
 		c.Error(err)

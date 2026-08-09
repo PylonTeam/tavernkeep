@@ -230,7 +230,7 @@ func prepareStatements() error {
 		return err
 	}
 
-	if queryProductsStmt, err = db.Prepare("SELECT prototype, name, price, accolade, achieve_game_mode, achieve_name FROM product WHERE available = TRUE"); err != nil {
+	if queryProductsStmt, err = db.Prepare("SELECT prototype, name, price, accolade, achieve_game_mode, achieve_name FROM product WHERE (prototype = ?1 OR ?1 IS NULL) AND available = TRUE"); err != nil {
 		return err
 	}
 
