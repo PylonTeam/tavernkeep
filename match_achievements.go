@@ -70,8 +70,10 @@ func progressAchievementsForMatchPlayer(ctx *achievementProgressContext, m *Matc
 				}
 			}
 		}
+	}
 
-		if p.Winner && m.GameMode == "pvpa" {
+	if p.Winner {
+		if m.GameMode == "pvpa" {
 			var delta uint32 = 1
 			if _, err := progressAchievement(ctx, id, AchievementRef{Name: "win_1", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
 				return err
