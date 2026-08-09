@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -535,12 +534,6 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 
 	mRes.Recorded = time.Unix(recorded, 0)
 
-	type recordMostKills struct {
-		id    []uint64
-		count uint32
-	}
-	mostKills := recordMostKills{id: []uint64{}}
-
 	for id, player := range m.Players {
 		if _, err := txExecInsertMatchPlayerStmt.Exec(mRes.ID, id, player.Name, player.Team, player.Reward, player.Kills, player.Deaths, player.Winner, player.BossDamage); err != nil {
 			return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
@@ -572,75 +565,17 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 			}
 		}
 
-		if player.Kills >= 1 {
-			kills := uint32(player.Kills)
-
-			if m.GameMode == "pvpa" {
-				if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_1", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-					return CompletedMatch{}, err
-				}
-
-				if kills >= 50 {
-					if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_one_match_50", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-						return CompletedMatch{}, err
-					}
-				}
-
-				if kills >= 100 {
-					if _, err := progressAchievement(tx, id, AchievementRef{Name: "kill_one_match_100", GameMode: "pvpa"}, &kills, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-						return CompletedMatch{}, err
-					}
-				}
-			}
-
-			if kills == mostKills.count {
-				mostKills.id = append(mostKills.id, id)
-			} else if kills >= mostKills.count {
-				mostKills.id = []uint64{id}
-				mostKills.count = kills
-			}
-		}
-
-		if player.Winner && m.GameMode == "pvpa" {
-			var delta uint32 = 1
-			if _, err := progressAchievement(tx, id, AchievementRef{Name: "win_1", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-				return CompletedMatch{}, err
-			}
-
-			if _, err := progressAchievement(tx, id, AchievementRef{Name: "win_5", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-				return CompletedMatch{}, err
-			}
-
-			if _, err := progressAchievement(tx, id, AchievementRef{Name: "win_25", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-				return CompletedMatch{}, err
-			}
-
-			if _, err := progressAchievement(tx, id, AchievementRef{Name: "win_50", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-				return CompletedMatch{}, err
+		for key, value := range m.Metrics {
+			if _, err := txExecInsertMatchMetricStmt.Exec(mRes.ID, key, value); err != nil {
+				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 		}
 	}
 
-	for _, id := range mostKills.id {
-		var delta uint32 = 1
-
-		if m.GameMode == "pvpa" {
-			if _, err := progressAchievement(tx, id, AchievementRef{Name: "most_kills_in_match", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-				return CompletedMatch{}, err
-			}
-		}
-	}
-
-	for key, value := range m.Metrics {
-		if _, err := txExecInsertMatchMetricStmt.Exec(mRes.ID, key, value); err != nil {
-			return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
-		}
-	}
-
-	txExecInsertMatchTeam := tx.Stmt(execInsertMatchTeamStmt)
-	defer txExecInsertMatchTeam.Close()
-	txExecInsertMatchTeamBoss := tx.Stmt(execInsertMatchTeamBossStmt)
-	defer txExecInsertMatchTeamBoss.Close()
+	txExecInsertMatchTeamStmt := tx.Stmt(execInsertMatchTeamStmt)
+	defer txExecInsertMatchTeamStmt.Close()
+	txExecInsertMatchTeamBossStmt := tx.Stmt(execInsertMatchTeamBossStmt)
+	defer txExecInsertMatchTeamBossStmt.Close()
 
 	for i, team := range m.Teams[1:] {
 		if team == nil {
@@ -649,13 +584,13 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 
 		teamNumber := i + 1
 
-		if _, err := txExecInsertMatchTeam.Exec(mRes.ID, teamNumber, team.Points, team.BossDamage); err != nil {
+		if _, err := txExecInsertMatchTeamStmt.Exec(mRes.ID, teamNumber, team.Points, team.BossDamage); err != nil {
 			return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 
 		for _, boss := range team.Bosses {
 			// TODO: implement first blood bosses here!
-			if _, err := txExecInsertMatchTeamBoss.Exec(mRes.ID, teamNumber, boss, false); err != nil {
+			if _, err := txExecInsertMatchTeamBossStmt.Exec(mRes.ID, teamNumber, boss, false); err != nil {
 				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 		}
@@ -665,6 +600,10 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 		}
+	}
+
+	if err := progressAchievementsViaMatch(tx, &m); err != nil {
+		return CompletedMatch{}, fmt.Errorf("issue progressing achievements via match: %w", err)
 	}
 
 	return mRes, nil

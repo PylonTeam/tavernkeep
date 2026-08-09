@@ -144,22 +144,21 @@ func getAchievementsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, achievements)
 }
 
-func progressAchievement(tx *sql.Tx, id uint64, aRef AchievementRef, delta *uint32, external bool) (Achievement, error) {
+type achievementProgressContext struct {
+	txQueryAchievementDefStmt     *sql.Stmt
+	txQueryAchievementStmt        *sql.Stmt
+	txExecAchievementProgressStmt *sql.Stmt
+}
+
+func progressAchievement(ctx *achievementProgressContext, id uint64, aRef AchievementRef, delta *uint32, external bool) (Achievement, error) {
 	if delta != nil && *delta == 0 {
 		return Achievement{}, ErrAchievementNoDeltaZero
 	}
 
-	txQueryAchievementDefStmt := tx.Stmt(queryAchievementDefStmt)
-	defer txQueryAchievementDefStmt.Close()
-	txQueryAchievementStmt := tx.Stmt(queryAchievementStmt)
-	defer txQueryAchievementStmt.Close()
-	txExecAchievementProgressStmt := tx.Stmt(execAchievementProgressStmt)
-	defer txExecAchievementProgressStmt.Close()
-
 	a := Achievement{}
 	var noExtMut bool
 
-	if err := txQueryAchievementDefStmt.QueryRow(aRef.Name, aRef.GameMode).Scan(&a.Target, &a.Reward, &noExtMut); err == sql.ErrNoRows {
+	if err := ctx.txQueryAchievementDefStmt.QueryRow(aRef.Name, aRef.GameMode).Scan(&a.Target, &a.Reward, &noExtMut); err == sql.ErrNoRows {
 		return Achievement{}, ErrAchievementDoesNotExist
 	} else if err != nil {
 		return Achievement{}, fmt.Errorf("%w: %w", ErrDatabase, err)
@@ -171,7 +170,7 @@ func progressAchievement(tx *sql.Tx, id uint64, aRef AchievementRef, delta *uint
 
 	var claimed *uint32
 	var claimed_at *int64
-	if err := txQueryAchievementStmt.QueryRow(aRef.Name, aRef.GameMode, id).Scan(&a.Progress, &claimed, &claimed_at); err != nil && err != sql.ErrNoRows {
+	if err := ctx.txQueryAchievementStmt.QueryRow(aRef.Name, aRef.GameMode, id).Scan(&a.Progress, &claimed, &claimed_at); err != nil && err != sql.ErrNoRows {
 		return Achievement{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
@@ -187,7 +186,7 @@ func progressAchievement(tx *sql.Tx, id uint64, aRef AchievementRef, delta *uint
 	}
 
 	if a.Progress != initialProgress {
-		if _, err := txExecAchievementProgressStmt.Exec(aRef.Name, aRef.GameMode, id, a.Progress, a.Progress); err != nil {
+		if _, err := ctx.txExecAchievementProgressStmt.Exec(aRef.Name, aRef.GameMode, id, a.Progress, a.Progress); err != nil {
 			return Achievement{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 	}
@@ -218,7 +217,15 @@ func progressAchievementHandler(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
-	a, err := progressAchievement(tx, b.ID, b.Achievement, b.Delta, true)
+	ctx := achievementProgressContext{}
+	ctx.txQueryAchievementDefStmt = tx.Stmt(queryAchievementDefStmt)
+	defer ctx.txQueryAchievementDefStmt.Close()
+	ctx.txQueryAchievementStmt = tx.Stmt(queryAchievementStmt)
+	defer ctx.txQueryAchievementStmt.Close()
+	ctx.txExecAchievementProgressStmt = tx.Stmt(execAchievementProgressStmt)
+	defer ctx.txExecAchievementProgressStmt.Close()
+
+	a, err := progressAchievement(&ctx, b.ID, b.Achievement, b.Delta, true)
 	if err != nil {
 		var httpCode int
 
