@@ -13,7 +13,7 @@ type PlayerStats struct {
 	Deaths          uint32                      `json:"deaths" binding:"required"`
 	Wins            uint32                      `json:"wins" binding:"required"`
 	Games           uint32                      `json:"games" binding:"required"`
-	TeamPointsTotal uint32                      `json:"teamPointsTotal" binding:"required"`
+	TeamPointsTotal uint32                      `json:"teamPointsTotal,omitempty"`
 	Stats           map[string]uint32           `json:"stats" binding:"required"`
 	ItemStats       map[string]map[int32]uint32 `json:"itemStats" binding:"required"`
 }
@@ -27,6 +27,15 @@ type LeaderboardEntry struct {
 func calcLeaderboardHandler(c *gin.Context) {
 	if version := c.GetUint32("version"); version != 1 {
 		abortStatusError(c, http.StatusBadRequest, ErrVersion)
+		return
+	}
+
+	type requestQuery struct {
+		GameMode *string `form:"gameMode"`
+	}
+	var query requestQuery
+	if err := c.ShouldBindQuery(&query); err != nil {
+		abortStatusError(c, http.StatusBadRequest, fmt.Errorf("%w: %w", ErrMalformedQuery, err))
 		return
 	}
 
@@ -46,10 +55,8 @@ func calcLeaderboardHandler(c *gin.Context) {
 	defer txQueryMatchAggregatePlayerStatStmt.Close()
 	txQueryMatchAggregatePlayerItemStatStmt := tx.Stmt(queryMatchAggregatePlayerItemStatStmt)
 	defer txQueryMatchAggregatePlayerItemStatStmt.Close()
-	txQueryMatchAggregatePlayerTeamPointsStmt := tx.Stmt(queryMatchAggregatePlayerTeamPointsStmt)
-	defer txQueryMatchAggregatePlayerTeamPointsStmt.Close()
 
-	rows, err := txQueryMatchAggregatePlayerStmt.Query()
+	rows, err := txQueryMatchAggregatePlayerStmt.Query(query.GameMode)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", ErrDatabase, err)
 		c.Error(err)
@@ -71,7 +78,7 @@ func calcLeaderboardHandler(c *gin.Context) {
 
 		entry.Stats.Stats = map[string]uint32{}
 
-		rows, err := txQueryMatchAggregatePlayerStatStmt.Query(entry.ID)
+		rows, err := txQueryMatchAggregatePlayerStatStmt.Query(query.GameMode, entry.ID)
 		if err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
@@ -102,7 +109,7 @@ func calcLeaderboardHandler(c *gin.Context) {
 		}
 
 		entry.Stats.ItemStats = map[string]map[int32]uint32{}
-		rows, err = txQueryMatchAggregatePlayerItemStatStmt.Query(entry.ID)
+		rows, err = txQueryMatchAggregatePlayerItemStatStmt.Query(query.GameMode, entry.ID)
 		if err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
@@ -136,14 +143,19 @@ func calcLeaderboardHandler(c *gin.Context) {
 			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
-
-		if err := txQueryMatchAggregatePlayerTeamPointsStmt.QueryRow(entry.ID).Scan(&entry.Stats.TeamPointsTotal); err != nil {
-			err = fmt.Errorf("%w: %w", ErrDatabase, err)
-			c.Error(err)
-			abortStatusError(c, http.StatusInternalServerError, err)
-			return
-		}
 		defer rows.Close()
+
+		if query.GameMode == nil || *query.GameMode == "pvpa" {
+			txQueryMatchAggregatePlayerTeamPointsStmt := tx.Stmt(queryMatchAggregatePlayerTeamPointsStmt)
+			defer txQueryMatchAggregatePlayerTeamPointsStmt.Close()
+
+			if err := txQueryMatchAggregatePlayerTeamPointsStmt.QueryRow(entry.ID).Scan(&entry.Stats.TeamPointsTotal); err != nil {
+				err = fmt.Errorf("%w: %w", ErrDatabase, err)
+				c.Error(err)
+				abortStatusError(c, http.StatusInternalServerError, err)
+				return
+			}
+		}
 
 		all = append(all, entry)
 	}

@@ -385,15 +385,15 @@ WHERE prototype = ?
 		return err
 	}
 
-	if queryMatchAggregatePlayerStmt, err = db.Prepare("SELECT match_player.id, name, SUM(kills), SUM(deaths), SUM(winner), COUNT() FROM match_player JOIN match ON match_player.match_id = match.id GROUP BY match_player.id ORDER BY SUM(winner) DESC, SUM(kills) DESC, MAX(match.start)"); err != nil {
+	if queryMatchAggregatePlayerStmt, err = db.Prepare("SELECT match_player.id, name, SUM(kills), SUM(deaths), SUM(winner), COUNT() FROM match_player JOIN match ON match_player.match_id = match.id WHERE (match.game_mode = ?1 OR ?1 IS NULL) GROUP BY match_player.id ORDER BY SUM(winner) DESC, SUM(kills) DESC, MAX(match.start)"); err != nil {
 		return err
 	}
 
-	if queryMatchAggregatePlayerStatStmt, err = db.Prepare("SELECT key, SUM(value) FROM match_player_stat WHERE id = ? GROUP BY id, key"); err != nil {
+	if queryMatchAggregatePlayerStatStmt, err = db.Prepare(" SELECT key, SUM(value) FROM match_player_stat AS mps JOIN match AS m ON mps.match_id = m.id WHERE (m.game_mode = ?1 OR ?1 IS NULL) AND mps.id = ? GROUP BY mps.id, key"); err != nil {
 		return err
 	}
 
-	if queryMatchAggregatePlayerItemStatStmt, err = db.Prepare("SELECT key, item, SUM(value) FROM match_player_item_stat WHERE id = ? GROUP BY id, key, item"); err != nil {
+	if queryMatchAggregatePlayerItemStatStmt, err = db.Prepare("SELECT key, item, SUM(value) FROM match_player_item_stat AS mpis JOIN match AS m ON mpis.match_id = m.id WHERE (m.game_mode = ?1 OR ?1 IS NULL) AND mpis.id = ? GROUP BY mpis.id, key, item"); err != nil {
 		return err
 	}
 
