@@ -256,5 +256,5 @@ func purchaseProductHandler(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, item)
+	c.JSON(http.StatusCreated, item)
 }

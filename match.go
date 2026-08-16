@@ -756,5 +756,5 @@ func recordMatchHandler(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, mRes)
+	c.JSON(http.StatusCreated, mRes)
 }
