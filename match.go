@@ -178,55 +178,6 @@ func queryMatch(ctx *queryMatchContext, m *CompletedMatch) error {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 
-		player.Stats = map[string]uint32{}
-		rows, err := ctx.txQueryMatchPlayerStatsStmt.Query(m.ID, id)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrDatabase, err)
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var key string
-			var value uint32
-			if err := rows.Scan(&key, &value); err != nil {
-				return fmt.Errorf("%w: %w", ErrDatabase, err)
-			}
-
-			player.Stats[key] = value
-		}
-
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("%w: %w", ErrDatabase, err)
-		}
-
-		player.ItemStats = map[string]map[int32]uint32{}
-		rows, err = ctx.txQueryMatchPlayerItemStatsStmt.Query(m.ID, id)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrDatabase, err)
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var key string
-			var item int32
-			var value uint32
-			if err := rows.Scan(&key, &item, &value); err != nil {
-				return fmt.Errorf("%w: %w", ErrDatabase, err)
-			}
-
-			if vals, hasVals := player.ItemStats[key]; hasVals {
-				// FIXME: is any of this needed?
-				vals[item] = value
-				player.ItemStats[key] = vals
-			} else {
-				player.ItemStats[key] = map[int32]uint32{item: value}
-			}
-		}
-
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("%w: %w", ErrDatabase, err)
-		}
-
 		rows, err = ctx.txQueryMatchPlayerRoundStmt.Query(m.ID, id)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
@@ -287,37 +238,33 @@ func queryMatch(ctx *queryMatchContext, m *CompletedMatch) error {
 		return fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
-	rows, err = ctx.txQueryMatchTeamBossStmt.Query(m.ID)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrDatabase, err)
-	}
-
-	defer rows.Close()
-	for rows.Next() {
-		var teamNumber int
-		var id int16
-		// TODO: Make use of first blood for bosses
-		var firstBlood bool
-
-		if err := rows.Scan(&teamNumber, &id, &firstBlood); err != nil {
+	if m.GameMode == "pvpa" {
+		rows, err = ctx.txQueryMatchTeamBossStmt.Query(m.ID)
+		if err != nil {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 
-		// first iteration will have the largest index, because this is in descending order,
-		// so use that to initialize our length.
-		if m.Teams == nil {
-			m.Teams = make([]*Team, teamNumber+1)
+		defer rows.Close()
+		for rows.Next() {
+			var teamNumber int
+			var id int16
+			// TODO: Make use of first blood for bosses
+			var firstBlood bool
+
+			if err := rows.Scan(&teamNumber, &id, &firstBlood); err != nil {
+				return fmt.Errorf("%w: %w", ErrDatabase, err)
+			}
+
+			if m.Teams[teamNumber].Bosses == nil {
+				m.Teams[teamNumber].Bosses = []int16{id}
+			} else {
+				m.Teams[teamNumber].Bosses = append(m.Teams[teamNumber].Bosses, id)
+			}
 		}
 
-		if m.Teams[teamNumber].Bosses == nil {
-			m.Teams[teamNumber].Bosses = []int16{id}
-		} else {
-			m.Teams[teamNumber].Bosses = append(m.Teams[teamNumber].Bosses, id)
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("%w: %w", ErrDatabase, err)
 	}
 
 	rows, err = ctx.txQueryMatchTeamRoundStmt.Query(m.ID)
@@ -332,12 +279,6 @@ func queryMatch(ctx *queryMatchContext, m *CompletedMatch) error {
 
 		if err := rows.Scan(&teamNumber, &i, &gemCaptures); err != nil {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
-		}
-
-		// first iteration will have the largest index, because this is in descending order,
-		// so use that to initialize our length.
-		if m.Teams == nil {
-			m.Teams = make([]*Team, teamNumber+1)
 		}
 
 		if m.Teams[teamNumber].GemCaptures == nil {
