@@ -564,11 +564,11 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 		}
+	}
 
-		for key, value := range m.Metrics {
-			if _, err := txExecInsertMatchMetricStmt.Exec(mRes.ID, key, value); err != nil {
-				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
-			}
+	for key, value := range m.Metrics {
+		if _, err := txExecInsertMatchMetricStmt.Exec(mRes.ID, key, value); err != nil {
+			return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 	}
 
