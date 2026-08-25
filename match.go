@@ -179,7 +179,7 @@ func queryMatch(ctx *queryMatchContext, m *CompletedMatch) error {
 		}
 
 		player.Stats = map[string]uint32{}
-		rows, err = ctx.txQueryMatchPlayerStatsStmt.Query(m.ID, id)
+		rows, err := ctx.txQueryMatchPlayerStatsStmt.Query(m.ID, id)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
