@@ -30,7 +30,7 @@ type Player struct {
 	Stats     map[string]uint32           `json:"stats,omitempty" binding:"required"`
 	ItemStats map[string]map[int32]uint32 `json:"itemStats,omitempty" binding:"required"`
 
-	// Arenas
+	// Arenas & PvP Adventure
 	BossDamage *uint32 `json:"bossDamage,omitempty"`
 
 	// Capture the Gem
@@ -45,7 +45,7 @@ type Team struct {
 	// Capture the Gem
 	GemCaptures []uint32 `json:"gemCaptures,omitempty"`
 
-	// Arenas
+	// Arenas & PvP Adventure
 	BossDamage *uint32 `json:"bossDamage,omitempty"`
 }
 
@@ -100,7 +100,7 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 	}
 
 	for _, p := range m.Players {
-		if !isArenas && p.BossDamage != nil {
+		if !isArenas && !isPvpa && p.BossDamage != nil {
 			return fmt.Errorf("%w: cannot provide player boss damage for this game mode", ErrMalformedMatch)
 		}
 
@@ -118,7 +118,7 @@ func (m *Match) UnmarshalJSON(b []byte) error {
 			return fmt.Errorf("%w: cannot provide points for this game mode", ErrMalformedMatch)
 		}
 
-		if !isArenas && t.BossDamage != nil {
+		if !isArenas && !isPvpa && t.BossDamage != nil {
 			return fmt.Errorf("%w: cannot provide team boss damage for this game mode", ErrMalformedMatch)
 		}
 
