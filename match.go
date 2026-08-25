@@ -178,7 +178,7 @@ func queryMatch(ctx *queryMatchContext, m *CompletedMatch) error {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
 
-		rows, err = ctx.txQueryMatchPlayerRoundStmt.Query(m.ID, id)
+		rows, err := ctx.txQueryMatchPlayerRoundStmt.Query(m.ID, id)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrDatabase, err)
 		}
