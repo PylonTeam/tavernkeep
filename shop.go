@@ -217,7 +217,7 @@ func purchaseProductHandler(c *gin.Context) {
 	}
 
 	if *item.PurchasePrice > 0 {
-		result, err := txExecReduceGemsStmt.Exec(item.PurchasePrice, item.PurchasePrice, id)
+		result, err := txExecReduceGemsStmt.Exec(item.PurchasePrice, id)
 		if err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)

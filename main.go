@@ -39,6 +39,7 @@ var ErrProductRequiresAccolade = errors.New("prerequisite accolade not in posses
 var ErrProductRequiresAchievement = errors.New("prerequisite achievement has not been claimed")
 var ErrUnsupportedGameMode = errors.New("unsupported game mode")
 var ErrVersion = errors.New("check version")
+var ErrNoProfile = errors.New("no profile")
 
 var (
 	steamApiKey    string
@@ -212,6 +213,10 @@ func main() {
 	}
 	defer closeStatements()
 
+	if execMoveLegacyGemsStmt != nil && deleteLegacyGemsStmt != nil {
+		log.Println("legacy gem table exists -- those count will be actualized to profiles upon character upsert")
+	}
+
 	r := gin.Default()
 
 	r.HandleMethodNotAllowed = true
@@ -245,6 +250,7 @@ func main() {
 	r.GET("/profile/:v", requireVersionHandler, getProfileHandler)
 	r.GET("/profile/inventory/:v", requireVersionHandler, steamAuthTicketHandler, getInventoryHandler)
 	r.POST("/profile/equip/:v", requireVersionHandler, requireContentTypeJson, steamAuthTicketHandler, equipItemHandler)
+	r.POST("/profile/character/:v", requireVersionHandler, requireContentTypeJson, steamAuthTicketHandler, putCharacterHandler)
 
 	r.GET("/match/:v", corsPublic, requireVersionHandler, getMatchHandler)
 	r.POST("/match/:v", requireVersionHandler, officialAuthHandler, recordMatchHandler)

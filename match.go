@@ -481,7 +481,7 @@ func recordMatchPayload(tx *sql.Tx, m Match, official OfficialIdentity) (Complet
 		}
 
 		if player.Reward > 0 {
-			if _, err := txExecIncreaseGemsStmt.Exec(id, player.Reward); err != nil {
+			if _, err := txExecIncreaseGemsStmt.Exec(player.Reward, id); err != nil {
 				return CompletedMatch{}, fmt.Errorf("%w: %w", ErrDatabase, err)
 			}
 		}

@@ -8,11 +8,21 @@ pragma busy_timeout = 5000;
 pragma synchronous = normal;
 pragma mmap_size = 30000000000;
 
-CREATE TABLE IF NOT EXISTS gem (
+CREATE TABLE IF NOT EXISTS profile (
     id TEXT NOT NULL,
-    count INTEGER NOT NULL DEFAULT 0,
+    gems INTEGER NOT NULL DEFAULT 0,
+    gender INTEGER NOT NULL,
+    clothing_style INTEGER NOT NULL,
+    hair_style INTEGER NOT NULL,
+    hair_color INTEGER NOT NULL,
+    skin_color INTEGER NOT NULL,
+    eye_color INTEGER NOT NULL,
+    shirt_color INTEGER NOT NULL,
+    under_shirt_color INTEGER NOT NULL,
+    pants_color INTEGER NOT NULL,
+    shoe_color INTEGER NOT NULL,
     CONSTRAINT pk PRIMARY KEY (id),
-    CONSTRAINT count_check CHECK (count >= 0)
+    CONSTRAINT gems_check CHECK (gems >= 0)
 );
 
 CREATE TABLE IF NOT EXISTS product (
@@ -172,7 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_match_player_item_stat_player ON match_player_ite
 `
 
 var (
-	queryGemsStmt               *sql.Stmt
+	queryProfileStmt            *sql.Stmt
 	queryProductsStmt           *sql.Stmt
 	queryProductStmt            *sql.Stmt
 	queryEquipmentStmt          *sql.Stmt
@@ -206,7 +216,8 @@ var (
 	execInsertMatchPlayerRoundStmt    *sql.Stmt
 	execInsertMatchTeamRoundStmt      *sql.Stmt
 
-	execIncreaseGemsStmt *sql.Stmt
+	execIncreaseGemsStmt  *sql.Stmt
+	execProfileUpsertChar *sql.Stmt
 
 	queryAchievementDefsStmt    *sql.Stmt
 	queryAchievementDefStmt     *sql.Stmt
@@ -222,11 +233,14 @@ var (
 	queryMatchAggregatePlayerStatStmt       *sql.Stmt
 	queryMatchAggregatePlayerItemStatStmt   *sql.Stmt
 	queryMatchAggregatePlayerTeamPointsStmt *sql.Stmt
+
+	execMoveLegacyGemsStmt *sql.Stmt
+	deleteLegacyGemsStmt   *sql.Stmt
 )
 
 func prepareStatements() error {
 	var err error
-	if queryGemsStmt, err = db.Prepare("SELECT count FROM gem WHERE id = ?"); err != nil {
+	if queryProfileStmt, err = db.Prepare("SELECT gems, gender, clothing_style, hair_style, hair_color, skin_color, eye_color, shirt_color, under_shirt_color, pants_color, shoe_color FROM profile WHERE id = ?"); err != nil {
 		return err
 	}
 
@@ -269,7 +283,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if execReduceGemsStmt, err = db.Prepare("UPDATE gem SET count = count - ? WHERE count >= ? AND id = ?"); err != nil {
+	if execReduceGemsStmt, err = db.Prepare("UPDATE profile SET gems = gems - ?1 WHERE gems >= ?1 AND id = ?2"); err != nil {
 		return err
 	}
 
@@ -353,7 +367,11 @@ WHERE prototype = ?
 		return err
 	}
 
-	if execIncreaseGemsStmt, err = db.Prepare("INSERT INTO gem (id, count) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET count=count + excluded.count"); err != nil {
+	if execIncreaseGemsStmt, err = db.Prepare("UPDATE profile SET gems = gems + ? WHERE id = ?;"); err != nil {
+		return err
+	}
+
+	if execProfileUpsertChar, err = db.Prepare("INSERT INTO profile (id, gender, clothing_style, hair_style, hair_color, skin_color, eye_color, shirt_color, under_shirt_color, pants_color, shoe_color) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(id) DO UPDATE SET gender = ?2, clothing_style = ?3, hair_style = ?4, hair_color = ?5, skin_color = ?6, eye_color = ?7, shirt_color = ?8, under_shirt_color = ?9, pants_color = ?10, shoe_color = ?11 WHERE id = ?1;"); err != nil {
 		return err
 	}
 
@@ -401,6 +419,19 @@ WHERE prototype = ?
 		return err
 	}
 
+	var name string
+	if err = db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='gem';").Scan(&name); err == nil {
+		if execMoveLegacyGemsStmt, err = db.Prepare("UPDATE profile AS p SET gems = p.gems + legacy.count FROM gem AS legacy WHERE p.id = legacy.id AND p.id = ?;"); err != nil {
+			return err
+		}
+
+		if deleteLegacyGemsStmt, err = db.Prepare("DELETE FROM gem WHERE id = ?;"); err != nil {
+			return err
+		}
+	} else if err != sql.ErrNoRows {
+		return err
+	}
+
 	return nil
 }
 
@@ -416,6 +447,7 @@ func closeStatements() {
 	queryAchievementClaimedStmt.Close()
 	queryAchievementDefStmt.Close()
 	queryAchievementDefsStmt.Close()
+	execProfileUpsertChar.Close()
 	execIncreaseGemsStmt.Close()
 	execInsertMatchTeamRoundStmt.Close()
 	execInsertMatchPlayerRoundStmt.Close()
@@ -448,5 +480,15 @@ func closeStatements() {
 	queryEquipmentStmt.Close()
 	queryProductStmt.Close()
 	queryProductsStmt.Close()
-	queryGemsStmt.Close()
+	queryProfileStmt.Close()
+
+	if execMoveLegacyGemsStmt != nil {
+		execMoveLegacyGemsStmt.Close()
+		execMoveLegacyGemsStmt = nil
+	}
+
+	if deleteLegacyGemsStmt != nil {
+		deleteLegacyGemsStmt.Close()
+		deleteLegacyGemsStmt = nil
+	}
 }
