@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	sentrygin "github.com/getsentry/sentry-go/gin"
 
@@ -104,35 +107,45 @@ func steamAuthTicketHandler(c *gin.Context) {
 }
 
 func officialAuthHandler(c *gin.Context) {
-	verified, hasVerified := c.Request.Header["Official-Verified"]
-	if !hasVerified {
+	auth, hasAuth := c.Request.Header["Authorization"]
+	if !hasAuth || !strings.HasPrefix(auth[0], "Bearer ") {
 		abortStatusError(c, http.StatusUnauthorized, ErrNoOfficialAuth)
 		return
 	}
 
-	if verified[0] != "SUCCESS" {
-		abortStatusError(c, http.StatusUnauthorized, fmt.Errorf("%w: unable to verify: %s", ErrNoOfficialAuth, verified[0]))
+	key := strings.TrimPrefix(auth[0], "Bearer ")
+
+	// FIXME: nil context? BAD!!!
+	tx, err := db.BeginTx(context.TODO(), nil)
+	if err != nil {
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
+	defer tx.Rollback()
 
-	subject, hasSubject := c.Request.Header["Official-Identity-Subject"]
-	fingerprint, hasFingerprint := c.Request.Header["Official-Identity-Fingerprint"]
-	if !hasSubject || !hasFingerprint {
-		c.Error(fmt.Errorf("%w: missing identity headers from proxy?", ErrNoOfficialAuth))
+	txQueryOfficialStmt := tx.Stmt(queryOfficialStmt)
+	defer txQueryOfficialStmt.Close()
+
+	var name string
+	if err = txQueryOfficialStmt.QueryRow(key).Scan(&name); err == sql.ErrNoRows {
 		abortStatusError(c, http.StatusUnauthorized, ErrNoOfficialAuth)
 		return
+	} else if err != nil {
+		err = fmt.Errorf("%w: %w", ErrDatabase, err)
+		c.Error(err)
+		abortStatusError(c, http.StatusInternalServerError, err)
+		return
 	}
 
-	c.Set("official", OfficialIdentity{Subject: subject[0], Fingerprint: fingerprint[0]})
+	c.Set("official", OfficialIdentity{Subject: name, Fingerprint: key})
 
 	if hub := sentrygin.GetHubFromContext(c); hub != nil {
 		hub.ConfigureScope(func(scope *sentry.Scope) {
 			scope.SetUser(sentry.User{
-				ID:        subject[0],
+				ID:        name,
 				IPAddress: c.ClientIP(),
-				Data: map[string]string{
-					"fingerprint": fingerprint[0],
-				},
 			})
 		})
 	}

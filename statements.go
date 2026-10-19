@@ -167,6 +167,11 @@ CREATE TABLE IF NOT EXISTS achievement (
 	CONSTRAINT progress_check CHECK (progress > 0)
 );
 
+CREATE TABLE IF NOT EXISTS official (
+	name TEXT NOT NULL,
+	key TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_item_owner ON item(owner);
 CREATE INDEX IF NOT EXISTS idx_product_available ON product(available);
 
@@ -233,6 +238,7 @@ var (
 	queryMatchAggregatePlayerStatStmt       *sql.Stmt
 	queryMatchAggregatePlayerItemStatStmt   *sql.Stmt
 	queryMatchAggregatePlayerTeamPointsStmt *sql.Stmt
+	queryOfficialStmt                       *sql.Stmt
 
 	execMoveLegacyGemsStmt *sql.Stmt
 	deleteLegacyGemsStmt   *sql.Stmt
@@ -416,6 +422,10 @@ WHERE prototype = ?
 	}
 
 	if queryMatchAggregatePlayerTeamPointsStmt, err = db.Prepare("SELECT COALESCE(SUM(mt.points), 0) FROM match_player mp LEFT JOIN match_team mt ON mp.match_id = mt.match_id AND mp.team = mt.team WHERE mp.id = ?"); err != nil {
+		return err
+	}
+
+	if queryOfficialStmt, err = db.Prepare("SELECT name FROM official WHERE key = ?"); err != nil {
 		return err
 	}
 
