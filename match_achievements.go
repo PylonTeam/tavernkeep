@@ -50,6 +50,10 @@ func progressAchievementsViaMatch(tx *sql.Tx, m *Match) error {
 }
 
 func progressAchievementsForMatchPlayer(ctx *achievementProgressContext, m *Match, id uint64, p *Player) error {
+	if m.GameMode == "arenas" {
+		return progressArenasAchievementsForMatchPlayer(ctx, m, id, p)
+	}
+
 	if p.Kills >= 1 {
 		kills := uint32(p.Kills)
 
