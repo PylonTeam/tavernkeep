@@ -312,7 +312,7 @@ func claimAchievementHandler(c *gin.Context) {
 	*a.ClaimedAt = time.Unix(claimed_at, 0)
 
 	if a.Reward > 0 {
-		if _, err = txExecIncreaseGemsStmt.Exec(id, a.Reward); err != nil {
+		if _, err = txExecIncreaseGemsStmt.Exec(a.Reward, id); err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
 			abortStatusError(c, http.StatusInternalServerError, err)
