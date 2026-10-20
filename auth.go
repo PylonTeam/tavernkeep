@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -115,21 +114,9 @@ func officialAuthHandler(c *gin.Context) {
 
 	key := strings.TrimPrefix(auth[0], "Bearer ")
 
-	// FIXME: nil context? BAD!!!
-	tx, err := db.BeginTx(context.TODO(), nil)
-	if err != nil {
-		err = fmt.Errorf("%w: %w", ErrDatabase, err)
-		c.Error(err)
-		abortStatusError(c, http.StatusInternalServerError, err)
-		return
-	}
-	defer tx.Rollback()
-
-	txQueryOfficialStmt := tx.Stmt(queryOfficialStmt)
-	defer txQueryOfficialStmt.Close()
-
 	var name string
-	if err = txQueryOfficialStmt.QueryRow(key).Scan(&name); err == sql.ErrNoRows {
+	// Scan releases the connection before downstream handlers begin their transactions.
+	if err := queryOfficialStmt.QueryRowContext(c.Request.Context(), key).Scan(&name); err == sql.ErrNoRows {
 		abortStatusError(c, http.StatusUnauthorized, ErrNoOfficialAuth)
 		return
 	} else if err != nil {
