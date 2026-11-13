@@ -369,7 +369,7 @@ func getMatchHandler(c *gin.Context) {
 				return
 			}
 
-			rows, err = txQueryMatchStmt.Query(m.ID, query.GameMode)
+			rows, err := txQueryMatchStmt.Query(m.ID, query.GameMode)
 			if err != nil {
 				err = fmt.Errorf("%w: %w", ErrDatabase, err)
 				c.Error(err)

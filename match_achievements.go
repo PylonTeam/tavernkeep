@@ -34,14 +34,14 @@ func progressAchievementsViaMatch(tx *sql.Tx, m *Match) error {
 				mostKills.count = kills
 			}
 		}
+	}
 
-		for _, id := range mostKills.id {
-			var delta uint32 = 1
+	for _, id := range mostKills.id {
+		var delta uint32 = 1
 
-			if m.GameMode == "pvpa" {
-				if _, err := progressAchievement(&ctx, id, AchievementRef{Name: "most_kills_in_match", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
-					return err
-				}
+		if m.GameMode == "pvpa" {
+			if _, err := progressAchievement(&ctx, id, AchievementRef{Name: "most_kills_in_match", GameMode: "pvpa"}, &delta, false); err != nil && !errors.Is(err, ErrAchievementAlreadyClaimed) {
+				return err
 			}
 		}
 	}

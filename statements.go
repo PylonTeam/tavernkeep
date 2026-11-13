@@ -405,7 +405,7 @@ WHERE prototype = ?
 		return err
 	}
 
-	if execAchievementClaimStmt, err = db.Prepare("UPDATE achievement SET claimed=?, claimed_at=unixepoch() WHERE name=? AND game_mode=? AND id=? AND progress=? AND claimed_at IS NULL AND claimed_at IS NULL RETURNING claimed_at, progress"); err != nil {
+	if execAchievementClaimStmt, err = db.Prepare("UPDATE achievement SET claimed=?, claimed_at=unixepoch() WHERE name=? AND game_mode=? AND id=? AND progress=? AND claimed_at IS NULL AND claimed IS NULL RETURNING claimed_at, progress"); err != nil {
 		return err
 	}
 
