@@ -62,21 +62,21 @@ func listProductsHandler(c *gin.Context) {
 	txQueryProductsStmt := tx.Stmt(queryProductsStmt)
 	defer txQueryProductsStmt.Close()
 
-	rows, err := txQueryProductsStmt.Query(query.Prototype)
+	productRows, err := txQueryProductsStmt.Query(query.Prototype)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", ErrDatabase, err)
 		c.Error(err)
 		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
-	defer rows.Close()
+	defer productRows.Close()
 
 	products := []Product{}
-	for rows.Next() {
+	for productRows.Next() {
 		var product Product
 		var achieveGameMode, achieveName *string
 
-		if err := rows.Scan(&product.Prototype, &product.Name, &product.Price, &product.Accolade, &achieveGameMode, &achieveName); err != nil {
+		if err := productRows.Scan(&product.Prototype, &product.Name, &product.Price, &product.Accolade, &achieveGameMode, &achieveName); err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
 			abortStatusError(c, http.StatusInternalServerError, err)
@@ -93,7 +93,7 @@ func listProductsHandler(c *gin.Context) {
 		products = append(products, product)
 	}
 
-	if err := rows.Err(); err != nil {
+	if err := productRows.Err(); err != nil {
 		err = fmt.Errorf("%w: %w", ErrDatabase, err)
 		c.Error(err)
 		abortStatusError(c, http.StatusInternalServerError, err)

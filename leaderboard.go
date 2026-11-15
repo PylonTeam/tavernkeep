@@ -56,20 +56,20 @@ func calcLeaderboardHandler(c *gin.Context) {
 	txQueryMatchAggregatePlayerItemStatStmt := tx.Stmt(queryMatchAggregatePlayerItemStatStmt)
 	defer txQueryMatchAggregatePlayerItemStatStmt.Close()
 
-	rows, err := txQueryMatchAggregatePlayerStmt.Query(query.GameMode)
+	aggregatePlayerRows, err := txQueryMatchAggregatePlayerStmt.Query(query.GameMode)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", ErrDatabase, err)
 		c.Error(err)
 		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
-	defer rows.Close()
+	defer aggregatePlayerRows.Close()
 
 	all := []LeaderboardEntry{}
-	for rows.Next() {
+	for aggregatePlayerRows.Next() {
 		var entry LeaderboardEntry
 
-		if err := rows.Scan(&entry.ID, &entry.Name, &entry.Stats.Kills, &entry.Stats.Deaths, &entry.Stats.Wins, &entry.Stats.Games); err != nil {
+		if err := aggregatePlayerRows.Scan(&entry.ID, &entry.Name, &entry.Stats.Kills, &entry.Stats.Deaths, &entry.Stats.Wins, &entry.Stats.Games); err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
 			abortStatusError(c, http.StatusInternalServerError, err)
@@ -78,20 +78,20 @@ func calcLeaderboardHandler(c *gin.Context) {
 
 		entry.Stats.Stats = map[string]uint32{}
 
-		rows, err := txQueryMatchAggregatePlayerStatStmt.Query(query.GameMode, entry.ID)
+		aggregatePlayerStatRows, err := txQueryMatchAggregatePlayerStatStmt.Query(query.GameMode, entry.ID)
 		if err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
 			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
-		defer rows.Close()
+		defer aggregatePlayerStatRows.Close()
 
-		for rows.Next() {
+		for aggregatePlayerStatRows.Next() {
 			var key string
 			var value uint32
 
-			if err := rows.Scan(&key, &value); err != nil {
+			if err := aggregatePlayerStatRows.Scan(&key, &value); err != nil {
 				err = fmt.Errorf("%w: %w", ErrDatabase, err)
 				c.Error(err)
 				abortStatusError(c, http.StatusInternalServerError, err)
@@ -101,7 +101,7 @@ func calcLeaderboardHandler(c *gin.Context) {
 			entry.Stats.Stats[key] = value
 		}
 
-		if err := rows.Err(); err != nil {
+		if err := aggregatePlayerStatRows.Err(); err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
 			abortStatusError(c, http.StatusInternalServerError, err)
@@ -109,21 +109,21 @@ func calcLeaderboardHandler(c *gin.Context) {
 		}
 
 		entry.Stats.ItemStats = map[string]map[int32]uint32{}
-		rows, err = txQueryMatchAggregatePlayerItemStatStmt.Query(query.GameMode, entry.ID)
+		aggregatePlayerItemStatRows, err := txQueryMatchAggregatePlayerItemStatStmt.Query(query.GameMode, entry.ID)
 		if err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
 			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
-		defer rows.Close()
+		defer aggregatePlayerItemStatRows.Close()
 
-		for rows.Next() {
+		for aggregatePlayerItemStatRows.Next() {
 			var key string
 			var item int32
 			var value uint32
 
-			if err := rows.Scan(&key, &item, &value); err != nil {
+			if err := aggregatePlayerItemStatRows.Scan(&key, &item, &value); err != nil {
 				err = fmt.Errorf("%w: %w", ErrDatabase, err)
 				c.Error(err)
 				abortStatusError(c, http.StatusInternalServerError, err)
@@ -137,13 +137,12 @@ func calcLeaderboardHandler(c *gin.Context) {
 			entry.Stats.ItemStats[key][item] = value
 		}
 
-		if err := rows.Err(); err != nil {
+		if err := aggregatePlayerItemStatRows.Err(); err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
 			abortStatusError(c, http.StatusInternalServerError, err)
 			return
 		}
-		defer rows.Close()
 
 		if query.GameMode == nil || *query.GameMode == "pvpa" {
 			txQueryMatchAggregatePlayerTeamPointsStmt := tx.Stmt(queryMatchAggregatePlayerTeamPointsStmt)
@@ -160,7 +159,7 @@ func calcLeaderboardHandler(c *gin.Context) {
 		all = append(all, entry)
 	}
 
-	if err := rows.Err(); err != nil {
+	if err := aggregatePlayerRows.Err(); err != nil {
 		err = fmt.Errorf("%w: %w", ErrDatabase, err)
 		c.Error(err)
 		abortStatusError(c, http.StatusInternalServerError, err)

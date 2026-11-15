@@ -75,18 +75,18 @@ func getProfileHandler(c *gin.Context) {
 		return
 	}
 
-	rows, err := txQueryEquipmentStmt.Query(id)
+	equipmentRows, err := txQueryEquipmentStmt.Query(id)
 	if err != nil {
 		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
-	defer rows.Close()
+	defer equipmentRows.Close()
 
 	profile.Equipment = map[string]string{}
-	for rows.Next() {
+	for equipmentRows.Next() {
 		var prototype, name string
-		if err := rows.Scan(&prototype, &name); err != nil {
+		if err := equipmentRows.Scan(&prototype, &name); err != nil {
 			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
@@ -95,7 +95,7 @@ func getProfileHandler(c *gin.Context) {
 		profile.Equipment[prototype] = name
 	}
 
-	if err := rows.Err(); err != nil {
+	if err := equipmentRows.Err(); err != nil {
 		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
@@ -179,20 +179,20 @@ func getInventoryHandler(c *gin.Context) {
 	txQueryInventoryStmt := tx.Stmt(queryInventoryStmt)
 	defer txQueryInventoryStmt.Close()
 
-	rows, err := txQueryInventoryStmt.Query(id)
+	itemRows, err := txQueryInventoryStmt.Query(id)
 	if err != nil {
 		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return
 	}
-	defer rows.Close()
+	defer itemRows.Close()
 
 	items := []Item{}
-	for rows.Next() {
+	for itemRows.Next() {
 		var issued int64
 		var item Item
 
-		if err := rows.Scan(&item.Prototype, &item.Name, &issued, &item.PurchasePrice); err != nil {
+		if err := itemRows.Scan(&item.Prototype, &item.Name, &issued, &item.PurchasePrice); err != nil {
 			c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 			abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 			return
@@ -202,7 +202,7 @@ func getInventoryHandler(c *gin.Context) {
 		items = append(items, item)
 	}
 
-	if err := rows.Err(); err != nil {
+	if err := itemRows.Err(); err != nil {
 		c.Error(fmt.Errorf("%w: %w", ErrDatabase, err))
 		abortStatusError(c, http.StatusInternalServerError, ErrDatabase)
 		return

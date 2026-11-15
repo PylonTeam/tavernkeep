@@ -58,21 +58,21 @@ func getAchievementsHandler(c *gin.Context) {
 	txQueryAchievementsStmt := tx.Stmt(queryAchievementsStmt)
 	defer txQueryAchievementsStmt.Close()
 
-	rows, err := txQueryAchievementDefsStmt.Query(query.GameMode)
+	achDefsRows, err := txQueryAchievementDefsStmt.Query(query.GameMode)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", ErrDatabase, err)
 		c.Error(err)
 		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
-	defer rows.Close()
+	defer achDefsRows.Close()
 
 	achievements := map[string]Achievement{}
-	for rows.Next() {
+	for achDefsRows.Next() {
 		var name string
 		a := Achievement{}
 
-		if err := rows.Scan(&name, &a.Target, &a.Reward); err != nil {
+		if err := achDefsRows.Scan(&name, &a.Target, &a.Reward); err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
 			abortStatusError(c, http.StatusInternalServerError, err)
@@ -82,29 +82,29 @@ func getAchievementsHandler(c *gin.Context) {
 		achievements[name] = a
 	}
 
-	if err := rows.Err(); err != nil {
+	if err := achDefsRows.Err(); err != nil {
 		err = fmt.Errorf("%w: %w", ErrDatabase, err)
 		c.Error(err)
 		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	rows, err = txQueryAchievementsStmt.Query(query.GameMode, id)
+	achsRows, err := txQueryAchievementsStmt.Query(query.GameMode, id)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", ErrDatabase, err)
 		c.Error(err)
 		abortStatusError(c, http.StatusInternalServerError, err)
 		return
 	}
-	defer rows.Close()
+	defer achsRows.Close()
 
-	for rows.Next() {
+	for achsRows.Next() {
 		var name string
 		var progress uint32
 		var claimed *uint32
 		var claimed_at *int64
 
-		if err := rows.Scan(&name, &progress, &claimed, &claimed_at); err != nil {
+		if err := achsRows.Scan(&name, &progress, &claimed, &claimed_at); err != nil {
 			err = fmt.Errorf("%w: %w", ErrDatabase, err)
 			c.Error(err)
 			abortStatusError(c, http.StatusInternalServerError, err)
@@ -127,7 +127,7 @@ func getAchievementsHandler(c *gin.Context) {
 		}
 	}
 
-	if err := rows.Err(); err != nil {
+	if err := achsRows.Err(); err != nil {
 		err = fmt.Errorf("%w: %w", ErrDatabase, err)
 		c.Error(err)
 		abortStatusError(c, http.StatusInternalServerError, err)
